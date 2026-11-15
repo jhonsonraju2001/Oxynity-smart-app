@@ -1,0 +1,6 @@
+{
+  "name": "Oxynity Smart",
+  "description": "Smart IoT app for Oxynity Micro-Nano Bubble Generators with live DO sensor monitoring, remote ON/OFF control, GPRS GPS location, runtime analytics, ESP32 code generator, and Firebase live sync.",
+  "requestFramePermissions": ["geolocation"],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

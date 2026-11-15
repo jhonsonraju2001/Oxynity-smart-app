@@ -1,0 +1,61 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
+    <title>Oxynity Smart - Micro-Nano Bubble Generators</title>
+    <link rel="icon" type="image/png" href="/favicon.png" />
+    <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
+    <meta name="theme-color" content="#0F3A44" />
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800;900&display=swap">
+    <style>
+      html, body {
+        margin: 0;
+        padding: 0;
+        height: 100%;
+        width: 100%;
+        overflow: hidden;
+      }
+      html.dark, html.dark body, [data-theme="dark"], [data-theme="dark"] body {
+        background-color: #071A1F;
+        color: #E8F4F6;
+      }
+      html:not(.dark):not([data-theme="dark"]), html:not(.dark):not([data-theme="dark"]) body {
+        background-color: #F2F7F8;
+        color: #0B2B33;
+      }
+      @keyframes oxSpin {
+        to { transform: rotate(360deg); }
+      }
+    </style>
+    <script>
+      (function() {
+        try {
+          var saved = localStorage.getItem('oxynity_theme') || 'auto';
+          var isDark = saved === 'dark' || (saved === 'auto' && window.matchMedia('(prefers-color-scheme: dark)').matches);
+          if (isDark) {
+            document.documentElement.classList.add('dark');
+            document.documentElement.setAttribute('data-theme', 'dark');
+          } else {
+            document.documentElement.classList.remove('dark');
+            document.documentElement.setAttribute('data-theme', 'light');
+          }
+        } catch(e) {}
+      })();
+    </script>
+  </head>
+  <body>
+    <div id="root">
+      <div style="min-height: 100vh; height: 100%; display: flex; flex-direction: column; align-items: center; justify-content: center; background-color: #071A1F; color: #38bdf8; font-family: 'Plus Jakarta Sans', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; text-align: center; padding: 20px; box-sizing: border-box; -webkit-user-select: none; user-select: none;">
+        <div style="width: 52px; height: 52px; border: 3px solid rgba(56, 189, 248, 0.2); border-top-color: #38bdf8; border-radius: 50%; animation: oxSpin 0.9s linear infinite;"></div>
+        <div style="margin-top: 18px; font-weight: 900; font-size: 19px; letter-spacing: 0.12em; color: #38bdf8;">OXYNITY SMART</div>
+        <div style="margin-top: 5px; font-size: 9px; font-weight: 800; letter-spacing: 0.22em; color: #94a3b8; text-transform: uppercase;">Aquaculture Telemetry</div>
+      </div>
+    </div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>
+
+

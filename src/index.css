@@ -1,0 +1,246 @@
+@import "tailwindcss";
+
+@custom-variant dark (&:where([data-theme=dark], [data-theme=dark] *, .dark, .dark *));
+
+@theme {
+  --font-sans: 'Plus Jakarta Sans', system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+}
+
+:root {
+  --sat: env(safe-area-inset-top, 0px);
+  --sab: env(safe-area-inset-bottom, 0px);
+  --sal: env(safe-area-inset-left, 0px);
+  --sar: env(safe-area-inset-right, 0px);
+
+  /* Theme Tokens Matching Reference App */
+  --bg: #F2F7F8;
+  --card: #ffffff;
+  --ink: #0B2B33;
+  --mut: #5B7479;
+  --line: #DDE8EA;
+  --teal: #0E7C86;
+  --aqua: #19C3D1;
+  --track: #E6EFF1;
+  --zone: #DCE9EC;
+  --glass: #EEF3F4;
+  --okb: #DFF4E8;
+  --okf: #14673B;
+  --wab: #FDECC8;
+  --waf: #6B3F00;
+  --bab: #FBE0E0;
+  --baf: #8A1C1C;
+  --ring: #CDEFF2;
+  --offdisc: #5B7479;
+  --sand: #E9D9B5;
+  --wt: #CFEFF3;
+  --wb: #7CC7D2;
+  --wtx: #D8E6C9;
+  --wbx: #86AD93;
+  --shadow: 0 1px 4px rgba(11, 43, 51, 0.15);
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #071A1F;
+    --card: #12313A;
+    --ink: #E8F4F6;
+    --mut: #9DB8BD;
+    --line: #1F4650;
+    --teal: #19C3D1;
+    --track: #08222A;
+    --zone: #24444D;
+    --glass: #1B3A43;
+    --okb: #12372A;
+    --okf: #7BE0A5;
+    --wab: #4A3510;
+    --waf: #FFD58A;
+    --bab: #4A1A1A;
+    --baf: #FFB4B4;
+    --ring: #1F4650;
+    --offdisc: #35565E;
+    --sand: #3A4A44;
+    --wt: #0F3A44;
+    --wb: #0A2B33;
+    --wtx: #1B3A31;
+    --wbx: #0F241F;
+    --shadow: 0 1px 4px rgba(0, 0, 0, 0.4);
+  }
+}
+
+:root[data-theme="dark"], .dark {
+  --bg: #071A1F;
+  --card: #12313A;
+  --ink: #E8F4F6;
+  --mut: #9DB8BD;
+  --line: #1F4650;
+  --teal: #19C3D1;
+  --track: #08222A;
+  --zone: #24444D;
+  --glass: #1B3A43;
+  --okb: #12372A;
+  --okf: #7BE0A5;
+  --wab: #4A3510;
+  --waf: #FFD58A;
+  --bab: #4A1A1A;
+  --baf: #FFB4B4;
+  --ring: #1F4650;
+  --offdisc: #35565E;
+  --sand: #3A4A44;
+  --wt: #0F3A44;
+  --wb: #0A2B33;
+  --wtx: #1B3A31;
+  --wbx: #0F241F;
+  --shadow: 0 1px 4px rgba(0, 0, 0, 0.4);
+}
+
+@layer base {
+  html, body, #root {
+    height: 100%;
+    width: 100%;
+    margin: 0;
+    padding: 0;
+    font-family: 'Plus Jakarta Sans', system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+    letter-spacing: -0.012em;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    text-rendering: optimizeLegibility;
+    -webkit-tap-highlight-color: transparent;
+    -webkit-overflow-scrolling: touch;
+  }
+
+  *, *::before, *::after {
+    box-sizing: border-box;
+  }
+
+  select {
+    color-scheme: light dark;
+  }
+
+  option {
+    background-color: var(--card);
+    color: var(--ink);
+  }
+
+  svg text {
+    font-family: 'Plus Jakarta Sans', system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  }
+}
+
+/* Keyframe Animations */
+@keyframes sway { from { transform: rotate(-5deg); } to { transform: rotate(5deg); } }
+@keyframes sway2 { from { transform: rotate(-3deg); } to { transform: rotate(3deg); } }
+@keyframes beat { 0%, 56%, 100% { transform: scale(1); } 12% { transform: scale(1.08); } 28% { transform: scale(1); } 40% { transform: scale(1.12); } }
+@keyframes halo { 0% { opacity: 0.4; transform: scale(0.95); } 45%, 100% { opacity: 0; transform: scale(1.3); } }
+@keyframes spin { to { transform: rotate(360deg); } }
+@keyframes rock { from { transform: rotate(-2deg); } to { transform: rotate(2deg); } }
+@keyframes bob { from { transform: translateY(0); } to { transform: translateY(-4px); } }
+
+.beat { transform-origin: 72px 72px; animation: beat 1.4s infinite; }
+.halo { transform-origin: 72px 72px; opacity: 0; animation: halo 1.4s infinite; }
+.doring { --c: #19C3D1; }
+.doring.low { --c: #E8A33D; }
+.doring.crit { --c: #E5484D; }
+.orb { transform-origin: 80px 80px; animation: spin 3s linear infinite; }
+.low .orb { animation-duration: 1.2s; }
+.crit .orb { animation-duration: 0.7s; }
+.halo2 { transform-origin: 80px 80px; animation: halo 2s infinite; }
+.low .halo2 { animation-duration: 1s; }
+.crit .halo2 { animation-duration: 0.6s; }
+.rock { animation: rock 3s ease-in-out infinite alternate; }
+.sway { animation: sway2 2.6s ease-in-out infinite alternate; }
+.bobm { animation: bob 1.8s ease-in-out infinite alternate; }
+
+@media (prefers-reduced-motion: reduce) {
+  .beat, .halo, .orb, .halo2, .rock, .sway, .bobm { animation: none; }
+}
+
+/* Safe area padding utilities */
+.safe-top {
+  padding-top: max(var(--sat), 8px);
+}
+
+.safe-bottom {
+  padding-bottom: max(var(--sab), 12px);
+}
+
+/* Custom scrollbars: hide horizontal scrollbar completely while maintaining smooth vertical scroll */
+::-webkit-scrollbar {
+  width: 4px;
+  height: 0px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: rgba(148, 163, 184, 0.25);
+  border-radius: 9999px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(148, 163, 184, 0.45);
+}
+
+/* Hide scrollbar utility class */
+.no-scrollbar::-webkit-scrollbar {
+  display: none;
+}
+.no-scrollbar {
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+}
+
+/* Oxynity Animated Spray Logo Bubble Keyframes */
+.oxlogo .f { animation: oxFlow 2s linear infinite; }
+.oxlogo .e { animation: oxExit 2s linear infinite; }
+.oxlogo .g { opacity: 0; animation: oxGrow 2s ease-out infinite; }
+.oxlogo span.f, .oxlogo span.e, .oxlogo span.g { animation-delay: var(--ad, 0s); }
+
+@keyframes oxFlow {
+  from { transform: translate(0, 0) scale(1); }
+  to { transform: translate(var(--dx), var(--dy)) scale(var(--k)); }
+}
+
+@keyframes oxExit {
+  0% { opacity: 1; transform: translate(0, 0) scale(1); }
+  100% { opacity: 0; transform: translate(var(--dx), var(--dy)) scale(var(--k)); }
+}
+
+@keyframes oxGrow {
+  0% { opacity: 0; transform: scale(0); }
+  50% { opacity: 1; }
+  90%, 100% { opacity: 1; transform: scale(1); }
+}
+
+@keyframes oxPulse {
+  0% { transform: scale(1); opacity: 0.75; }
+  100% { transform: scale(3.2); opacity: 0; }
+}
+
+@keyframes oxBlink {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.35; }
+}
+
+.ox-blink { animation: oxBlink 1.1s ease-in-out infinite; }
+.ox-halo { position: absolute; inset: 3px; border-radius: 50%; background: #22c55e; animation: oxPulse 1.6s ease-out infinite; }
+
+/* Print / Save to PDF Formatting */
+@media print {
+  nav,
+  header,
+  button,
+  .no-print {
+    display: none !important;
+  }
+  body, #root {
+    background: #ffffff !important;
+    color: #0b2b33 !important;
+    height: auto !important;
+    overflow: visible !important;
+    padding: 0 !important;
+    margin: 0 !important;
+  }
+}
+

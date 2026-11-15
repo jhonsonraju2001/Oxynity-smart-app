@@ -1,0 +1,12 @@
+{
+  "projectId": "oxynity-smart",
+  "appId": "1:608264153358:android:8077b7fd2ca0195a288f5f",
+  "apiKey": "AIzaSyCqOvdeEt19ntPzv3Bne1V1GackCnWdfwM",
+  "authDomain": "oxynity-smart.firebaseapp.com",
+  "firestoreDatabaseId": "(default)",
+  "storageBucket": "oxynity-smart.firebasestorage.app",
+  "messagingSenderId": "608264153358",
+  "measurementId": "",
+  "oAuthClientId": "",
+  "recaptchaSiteKey": ""
+}

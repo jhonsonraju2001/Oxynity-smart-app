@@ -1,0 +1,62 @@
+{
+  "entities": {
+    "Device": {
+      "title": "Device",
+      "description": "Smart Oxynity Micro-Nano Bubble Generator device telemetries and state",
+      "type": "object",
+      "properties": {
+        "deviceId": { "type": "string" },
+        "name": { "type": "string" },
+        "status": { "type": "string", "enum": ["ON", "OFF", "MAINTENANCE", "ERROR"] },
+        "doLevel": { "type": "number" },
+        "targetDo": { "type": "number" },
+        "waterTemp": { "type": "number" },
+        "phLevel": { "type": "number" },
+        "flowRate": { "type": "number" },
+        "pressure": { "type": "number" },
+        "totalRunHours": { "type": "number" },
+        "currentSessionMinutes": { "type": "number" },
+        "lastMaintenanceHours": { "type": "number" },
+        "maintenanceIntervalHours": { "type": "number" },
+        "latitude": { "type": "number" },
+        "longitude": { "type": "number" },
+        "locationName": { "type": "string" },
+        "gprsSignal": { "type": "number" },
+        "gprsConnected": { "type": "boolean" },
+        "autoMode": { "type": "boolean" },
+        "minDoAlert": { "type": "number" },
+        "maxDoAlert": { "type": "number" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["deviceId", "name", "status", "doLevel", "totalRunHours", "updatedAt"]
+    },
+    "TelemetryHistory": {
+      "title": "TelemetryHistory",
+      "description": "Historical readings logged periodically from the generator",
+      "type": "object",
+      "properties": {
+        "timestamp": { "type": "string", "format": "date-time" },
+        "doLevel": { "type": "number" },
+        "status": { "type": "string" },
+        "waterTemp": { "type": "number" },
+        "flowRate": { "type": "number" },
+        "latitude": { "type": "number" },
+        "longitude": { "type": "number" }
+      },
+      "required": ["timestamp", "doLevel", "status"]
+    },
+    "Alert": {
+      "title": "Alert",
+      "description": "System warnings, DO threshold alerts, and maintenance reminders",
+      "type": "object",
+      "properties": {
+        "timestamp": { "type": "string", "format": "date-time" },
+        "title": { "type": "string" },
+        "message": { "type": "string" },
+        "severity": { "type": "string", "enum": ["info", "warning", "critical"] },
+        "read": { "type": "boolean" }
+      },
+      "required": ["timestamp", "title", "message", "severity", "read"]
+    }
+  }
+}

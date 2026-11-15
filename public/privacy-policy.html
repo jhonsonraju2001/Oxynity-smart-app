@@ -1,0 +1,200 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Privacy Policy - Oxynity Smart</title>
+  <style>
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+      line-height: 1.65;
+      color: #1e293b;
+      background: #f8fafc;
+      margin: 0;
+      padding: 24px 16px;
+    }
+    .container {
+      max-width: 840px;
+      margin: 0 auto;
+      background: #ffffff;
+      padding: 40px 32px;
+      border-radius: 20px;
+      box-shadow: 0 4px 24px rgba(0, 0, 0, 0.06);
+      border: 1px solid #e2e8f0;
+    }
+    h1 {
+      color: #0284c7;
+      font-size: 28px;
+      font-weight: 800;
+      border-bottom: 2px solid #e2e8f0;
+      padding-bottom: 12px;
+      margin-top: 0;
+    }
+    h2 {
+      color: #0f172a;
+      font-size: 19px;
+      font-weight: 700;
+      margin-top: 32px;
+      border-left: 4px solid #0284c7;
+      padding-left: 12px;
+    }
+    h3 {
+      color: #334155;
+      font-size: 15px;
+      font-weight: 600;
+      margin-top: 18px;
+    }
+    p, li {
+      font-size: 14.5px;
+      color: #334155;
+    }
+    ul {
+      padding-left: 22px;
+    }
+    li {
+      margin-bottom: 6px;
+    }
+    .badge {
+      display: inline-block;
+      background: #e0f2fe;
+      color: #0369a1;
+      font-size: 12px;
+      font-weight: 700;
+      padding: 4px 12px;
+      border-radius: 9999px;
+      margin-bottom: 16px;
+      letter-spacing: 0.5px;
+      text-transform: uppercase;
+    }
+    .callout {
+      background: #f0fdf4;
+      border-left: 4px solid #16a34a;
+      padding: 16px 20px;
+      border-radius: 8px;
+      margin: 20px 0;
+      font-size: 14px;
+    }
+    .contact-box {
+      background: #f1f5f9;
+      border: 1px solid #cbd5e1;
+      border-left: 4px solid #0284c7;
+      padding: 20px;
+      border-radius: 10px;
+      margin-top: 28px;
+      font-size: 14px;
+    }
+    .contact-box a {
+      color: #0284c7;
+      font-weight: 600;
+      text-decoration: none;
+    }
+    .contact-box a:hover {
+      text-decoration: underline;
+    }
+    footer {
+      text-align: center;
+      margin-top: 36px;
+      padding-top: 20px;
+      border-top: 1px solid #e2e8f0;
+      font-size: 12px;
+      color: #64748b;
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <span class="badge">Google Play Verified &bull; Official Policy</span>
+    <h1>Privacy Policy for Oxynity Smart</h1>
+    <p><strong>Effective Date:</strong> October 01, 2026<br />
+       <strong>Last Updated:</strong> October 01, 2026</p>
+
+    <p>
+      Oxynity Smart ("we", "our", or "us") is dedicated to protecting your privacy and ensuring transparency regarding how data is handled across our <strong>Oxynity Smart</strong> mobile application, cloud services, and connected aquaculture IoT hardware devices (ESP32 controllers and SIM900A GPRS cellular modems).
+    </p>
+
+    <h2>1. Information We Collect</h2>
+    <p>We collect only the minimum information strictly necessary to operate our aquaculture automation and dissolved oxygen monitoring platform:</p>
+
+    <h3>A. Personal & Account Information</h3>
+    <ul>
+      <li><strong>Name and Email Address:</strong> Collected upon account registration or login to authenticate user identity, manage pond authorization permissions, and facilitate secure password recovery.</li>
+    </ul>
+
+    <h3>B. Geolocation Data</h3>
+    <ul>
+      <li><strong>Precise & Coarse Location (GPS):</strong> Collected <em>only</em> when you explicitly interact with the "Calibrate Pond Location" action in the GPRS Live Map. This anchors your physical pond coordinates to enable distance and location-based monitoring. <strong>Oxynity Smart does NOT track your device location in the background or during normal app usage.</strong></li>
+    </ul>
+
+    <h3>C. Aquaculture IoT & Machinery Telemetry</h3>
+    <ul>
+      <li><strong>Dissolved Oxygen (DO) & Temperature Readings:</strong> Real-time water quality measurements transmitted by connected optical DO sensors.</li>
+      <li><strong>Machinery Relay Status:</strong> Operating state (ON/OFF), cumulative runtime hours, and session timestamps of micro-nano bubble generators and aerators.</li>
+      <li><strong>Cellular Network Diagnostic Data:</strong> Cellular Signal Quality index (CSQ) and cell tower identifiers (MCC, MNC, LAC, Cell ID) transmitted by SIM900A modems to confirm remote connectivity in rural farm belts.</li>
+    </ul>
+
+    <h2>2. Purpose and Legal Basis for Processing</h2>
+    <p>We process your data for the following legitimate purposes:</p>
+    <ul>
+      <li><strong>Core App Functionality:</strong> Delivering real-time DO monitoring, automated aeration controls, and pond machine switching.</li>
+      <li><strong>Hypoxia Protection & Alerts:</strong> Dispatching critical push notifications when water dissolved oxygen drops below user-configured safety thresholds.</li>
+      <li><strong>Machinery Diagnostics & Maintenance:</strong> Calculating cumulative run hours and alerting operators when the 500-hour service interval is reached.</li>
+      <li><strong>User Authentication:</strong> Securing access to connected farm equipment against unauthorized external interference.</li>
+    </ul>
+
+    <h2>3. Android App Permissions</h2>
+    <p>Oxynity Smart requests the following standard Android permissions with explicit user consent:</p>
+    <ul>
+      <li><code>android.permission.INTERNET</code> & <code>android.permission.ACCESS_NETWORK_STATE</code>: Required to communicate with Google Cloud Firestore and the Cloudflare edge bridge.</li>
+      <li><code>android.permission.POST_NOTIFICATIONS</code> & <code>android.permission.VIBRATE</code>: Required to alert farm operators of critical low oxygen conditions and emergency hardware stops.</li>
+      <li><code>android.permission.ACCESS_FINE_LOCATION</code> & <code>android.permission.ACCESS_COARSE_LOCATION</code>: Requested selectively when calibrating pond coordinates. You may deny this permission and manually enter coordinates without affecting core aeration controls.</li>
+    </ul>
+
+    <div class="callout">
+      <strong>Zero Background Tracking Notice:</strong> Oxynity Smart does not request background location (<code>ACCESS_BACKGROUND_LOCATION</code>) or exact calendar alarm permissions (<code>SCHEDULE_EXACT_ALARM</code>).
+    </div>
+
+    <h2>4. Data Storage, Security & Encryption</h2>
+    <ul>
+      <li><strong>Data in Transit:</strong> All data transmitted between the mobile application, cloud bridge, and database is encrypted using industry-standard <strong>HTTPS / TLS 1.3</strong> protocols.</li>
+      <li><strong>Data at Rest:</strong> Account credentials and telemetry records are stored in secure Google Cloud Firestore data centers with <strong>AES-256 encryption</strong>.</li>
+      <li><strong>Security Hardening:</strong> Android application backups via ADB are disabled (<code>android:allowBackup="false"</code>) and cleartext HTTP traffic is blocked (<code>android:usesCleartextTraffic="false"</code>).</li>
+    </ul>
+
+    <h2>5. Third-Party Infrastructure Providers</h2>
+    <p>We do not sell, rent, or trade your personal information or farm telemetry to any third party for marketing or advertising purposes. We utilize trusted cloud infrastructure strictly to deliver core IoT capabilities:</p>
+    <ul>
+      <li><strong>Google Firebase / Google Cloud Platform:</strong> Authentication, cloud database (Firestore), and push notification dispatch.</li>
+      <li><strong>Cloudflare Workers:</strong> Edge routing, rate-limiting, and cellular payload sanitization.</li>
+    </ul>
+
+    <h2>6. Account & Data Deletion (Google Play Compliance)</h2>
+    <p>In accordance with Google Play's User Data and Account Deletion policies, you have complete control over your personal data:</p>
+    <ul>
+      <li><strong>In-App Deletion:</strong> You can delete your account and all associated pond links at any time within the app by navigating to <strong>Settings &rarr; Security & Password &rarr; Delete Account & Wipe Data</strong>.</li>
+      <li><strong>Web Request Deletion:</strong> You may also request complete erasure of your account, email, and historical telemetry by emailing our Data Protection team at <a href="mailto:support@oxynity.com">support@oxynity.com</a> with the subject "Data Deletion Request". Requests are processed within 7 business days.</li>
+    </ul>
+
+    <h2>7. Children's Privacy</h2>
+    <p>
+      Oxynity Smart is an industrial commercial agricultural tool and is not intended for use by children under the age of 13 (or under 16 in the European Union). We do not knowingly collect personal data from children.
+    </p>
+
+    <h2>8. Changes to This Privacy Policy</h2>
+    <p>
+      We may update this Privacy Policy from time to time to reflect changes in our legal obligations or app features. The revised policy will be posted on this page with an updated "Last Updated" date.
+    </p>
+
+    <h2>9. Contact & Grievance Officer</h2>
+    <div class="contact-box">
+      <strong>Oxynity Smart Technologies Private Limited</strong><br />
+      <strong>Email Support:</strong> <a href="mailto:support@oxynity.com">support@oxynity.com</a><br />
+      <strong>Grievance & Privacy Inquiries:</strong> <a href="mailto:admin@oxynity.com">admin@oxynity.com</a><br />
+      <strong>Website:</strong> <a href="https://oxynity.com" target="_blank" rel="noopener">https://oxynity.com</a>
+    </div>
+
+    <footer>
+      &copy; 2026 Oxynity Smart Technologies Private Limited. All rights reserved.
+    </footer>
+  </div>
+</body>
+</html>

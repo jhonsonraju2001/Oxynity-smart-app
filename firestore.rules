@@ -1,0 +1,22 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Allow public read/write for smart IoT device telemetry and controls in demo applet
+    match /devices/{deviceId} {
+      allow read, write: if true;
+
+      match /telemetryHistory/{historyId} {
+        allow read, write: if true;
+      }
+
+      match /alerts/{alertId} {
+        allow read, write: if true;
+      }
+    }
+    
+    // Default fallback
+    match /{document=**} {
+      allow read, write: if true;
+    }
+  }
+}
