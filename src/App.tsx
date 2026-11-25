@@ -3,6 +3,10 @@ import { doc, onSnapshot, setDoc, updateDoc, deleteDoc, collection, query, where
 import { onAuthStateChanged, signOut } from 'firebase/auth';
 import { StatusBar, Style } from '@capacitor/status-bar';
 import { db, auth } from './lib/firebase';
+import { readingSlotId, saveReadingIfOnline } from './lib/reports';
+import { applySensorCalibration } from './lib/oxynity';
+import { isAdminEmail, DEMO_FARMER_EMAIL, DEMO_POND_ID, effectiveSensors, isSensorInstalled, isWithinAnySchedule, scheduleWindow, restMinutesFor, canUseAutoDo } from './lib/oxynity';
+import { AlarmCenter } from './components/AlarmCenter';
 import { sendLocalNotification, requestNotificationPermission } from './lib/notifications';
 
 import { DeviceTelemetry, TelemetryPoint, DeviceAlert, EnabledSensors, DeviceStatus, AeratorSchedule } from './types/iot';
@@ -20,7 +24,6 @@ import { DoGauge } from './components/DoGauge';
 import { PowerControl } from './components/PowerControl';
 import { StartStopLogCard, MachineStartStopLog } from './components/StartStopLogCard';
 import { PondDashboard, getEsp32HeartbeatStatus } from './components/PondDashboard';
-import { LiveGprsMap } from './components/LiveGprsMap';
 import { RuntimeAnalytics } from './components/RuntimeAnalytics';
 import { AddDevice } from './components/AddDevice';
 import { SettingsModal } from './components/SettingsModal';
@@ -40,6 +43,37 @@ const defaultEnabledSensors: EnabledSensors = {
   temp: true,
   sal: true,
 };
+
+// Demo pond for the demo farmer login. Not connected to any real machine.
+// Test location given by Naren on 16 Nov 2026.
+const createDemoPond = (): DeviceTelemetry => ({
+  ...createDefaultEmptyDevice(DEMO_FARMER_EMAIL),
+  deviceId: DEMO_POND_ID,
+  name: 'Demo Pond',
+  status: 'OFF',
+  status2: 'OFF',
+  // Demo pond has no real sensors, so Auto (DO) is hidden. Admin can mark sensors installed to demo them.
+  doSensorEnabled: false,
+  installedSensors: { do: false, temp: false, ph: false, orp: false, sal: false },
+  doLevel: 6.8,
+  totalRunHours: 0,
+  latitude: 16.711395,
+  longitude: 81.464035,
+  calibratedLatitude: 16.711395,
+  calibratedLongitude: 81.464035,
+  isCalibrated: true,
+  calibratedLocationName: 'Demo pond (test location)',
+  locationName: 'Demo pond (test location)',
+  autoMode: false,
+  cooldownEnabled: true,
+  isCoolingDown: false,
+  schedules: [],
+  runLogs: [],
+  ownerEmail: DEMO_FARMER_EMAIL,
+  linkedEmails: [DEMO_FARMER_EMAIL],
+  isDemo: true,
+  updatedAt: new Date().toISOString(),
+} as any);
 
 export default function App() {
   // Authentication States
@@ -62,9 +96,9 @@ export default function App() {
   const [isAlertsOpen, setIsAlertsOpen] = useState(false);
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [isSimulatingOffline, setIsSimulatingOffline] = useState(false);
-  const [alerts, setAlerts] = useState<DeviceAlert[]>(initialAlerts);
-  const [telemetryHistory, setTelemetryHistory] = useState<TelemetryPoint[]>(initialTelemetryHistory);
-  const [startStopLogs, setStartStopLogs] = useState<MachineStartStopLog[]>(initialStartStopLogs);
+  const [alerts, setAlerts] = useState<DeviceAlert[]>([]);
+  const [telemetryHistory, setTelemetryHistory] = useState<TelemetryPoint[]>([]);
+  const [startStopLogs, setStartStopLogs] = useState<MachineStartStopLog[]>([]);
 
   // Sensors Visibility State (Persisted across sessions)
   const [sensorsEnabled, setSensorsEnabled] = useState<EnabledSensors>(() => {
@@ -90,36 +124,72 @@ export default function App() {
     return () => window.removeEventListener('oxynity_temp_unit_change', handleTempUnitEvt);
   }, []);
 
+  // What the customer actually sees: their own on/off choice AND the sensor is installed on this pond
+  const visibleSensors = effectiveSensors(device, sensorsEnabled) as EnabledSensors;
+
+  // Farmer can switch every sensor on/off (what he sees on Home, Sensors and reports).
   const handleToggleSensor = (key: keyof EnabledSensors) => {
+    const turnOn = !visibleSensors[key];
     setSensorsEnabled((prev) => {
-      const updated = { ...prev, [key]: !prev[key] };
+      const updated = { ...prev, [key]: turnOn };
       try {
         localStorage.setItem('oxynity_sensors_enabled', JSON.stringify(updated));
       } catch {}
       return updated;
     });
+    // Display choice only (shownSensors), saved in the cloud so every phone agrees. It never marks a
+    // sensor "installed" (admin-only), so it cannot unlock Auto (DO) mode without a real DO sensor.
+    if (device.deviceId) {
+      updateDeviceInFirebase({ shownSensors: { ...(device.shownSensors || {}), [key]: turnOn } });
+    }
   };
 
-  // Real-time ESP32 Heartbeat Freshness Tracker (Updates every 2.5s)
+  // No DO sensor: Auto (DO) mode is not possible. Switch the pond to Manual once, and keep its
+  // schedules exactly as they were (older ponds used autoMode as the schedule switch).
+  useEffect(() => {
+    if (!device.deviceId || !device.autoMode || canUseAutoDo(device, sensorsEnabled)) return;
+    updateDeviceInFirebase({ autoMode: false, scheduleEnabled: device.scheduleEnabled ?? true });
+  }, [device.deviceId, device.autoMode, device.installedSensors, device.shownSensors, device.voltageMv, device.doSensorEnabled, sensorsEnabled.do]);
+
+  // Sensor & GPS history for reports: one record per 15 minutes while the machine is online.
+  // The Cloudflare worker writes the same record (same id), so this only fills gaps; never duplicates.
+  const deviceRef = useRef(device);
+  deviceRef.current = device;
+  useEffect(() => {
+    if (userRole === 'admin') return;
+    let lastSlot = '';
+    const tick = () => {
+      const d = deviceRef.current;
+      const slot = readingSlotId();
+      if (!d?.deviceId || slot === lastSlot) return;
+      saveReadingIfOnline(d).then((id) => { if (id) lastSlot = id; }).catch(() => {});
+    };
+    const first = setTimeout(tick, 20000);
+    const t = setInterval(tick, 60000);
+    return () => { clearTimeout(first); clearInterval(t); };
+  }, [device.deviceId, userRole]);
+
+  // Real-time ESP32 Heartbeat Freshness Tracker (Recalculates every 10s to keep UI accurate)
   const [, setHeartbeatTicker] = useState<number>(Date.now());
   useEffect(() => {
-    const timer = setInterval(() => setHeartbeatTicker(Date.now()), 2500);
+    const timer = setInterval(() => setHeartbeatTicker(Date.now()), 10000);
     return () => clearInterval(timer);
   }, []);
 
   const espHeartbeat = getEsp32HeartbeatStatus(device);
-  const isRealEspOnline = !isSimulatingOffline && isFirebaseConnected && espHeartbeat.isLive;
+  // Machine remains Online for up to 5 minutes (300 seconds) after lastSeen was received
+  const isRealEspOnline = !isSimulatingOffline && espHeartbeat.isLive;
   const espStatusText = isSimulatingOffline
-    ? 'System offline (Simulated)'
-    : !isFirebaseConnected
-    ? 'Connecting...'
+    ? 'Offline (test)'
     : espHeartbeat.isLive
-    ? 'System online'
-    : `System offline (${espHeartbeat.text.replace('Offline ', '').replace(/[()]/g, '')})`;
+    ? 'Online'
+    : `Offline · ${espHeartbeat.text.replace('Offline ', '').replace(/[()]/g, '').replace(/\s*ago$/, '')}`.replace(/ · $/, '');
 
   const mainContentRef = useRef<HTMLElement>(null);
   const lastAppToggleTimeRef = useRef<number>(0);
+  const targetAppStatusRef = useRef<{ deviceId: string; status: 'ON' | 'OFF'; timestamp: number } | null>(null);
   const autoStartedByDoRef = useRef<boolean>(false);
+  const fetchLiveBridgeRef = useRef<() => void>(() => {});
 
   // Configure Native Mobile Status Bar & Notifications
   useEffect(() => {
@@ -139,7 +209,7 @@ export default function App() {
 
   // Helper to get local ponds for a given user email
   const getPondsForUser = (cleanEmail: string): string[] => {
-    const isDemoUser = cleanEmail === 'operator@oxynity.com' || cleanEmail === 'admin@oxynity.com';
+    const isDemoUser = cleanEmail === DEMO_FARMER_EMAIL;
     const userPondsKey = `oxynity_user_ponds_${cleanEmail}`;
     const localPondsStr = localStorage.getItem(userPondsKey);
     if (localPondsStr) {
@@ -150,7 +220,7 @@ export default function App() {
     }
     // Only seed default demo ponds if this is a demo account
     if (isDemoUser) {
-      const defaultPonds = [DEFAULT_DEVICE_ID, 'OXY-ESP32-002'];
+      const defaultPonds = [DEMO_POND_ID];
       localStorage.setItem(userPondsKey, JSON.stringify(defaultPonds));
       return defaultPonds;
     }
@@ -174,7 +244,7 @@ export default function App() {
               const email = savedSession.email.trim().toLowerCase();
               setUserEmail(email);
               setUserName(savedSession.name || email.split('@')[0] || 'Operator');
-              setUserRole(email.includes('admin') ? 'admin' : (savedSession.role || 'operator'));
+              setUserRole(isAdminEmail(email) ? 'admin' : 'operator');
               setShowLoginPage(false);
 
               const initialPonds = getPondsForUser(email);
@@ -204,7 +274,7 @@ export default function App() {
         const email = (currentUser.email || 'operator@oxynity.com').trim().toLowerCase();
         setUserEmail(email);
         setUserName(currentUser.displayName || email.split('@')[0] || 'Operator');
-        if (email.includes('admin')) {
+        if (isAdminEmail(email)) {
           setUserRole('admin');
         } else {
           setUserRole('operator');
@@ -223,34 +293,11 @@ export default function App() {
           setDevice(createDefaultEmptyDevice(email));
         }
       } else {
-        // If not signed in via cloud Firebase Auth, check persistent verified local session
-        const savedSessionStr = localStorage.getItem('oxynity_active_session');
-        if (savedSessionStr) {
-          try {
-            const savedSession = JSON.parse(savedSessionStr);
-            if (savedSession && savedSession.email) {
-              const email = savedSession.email.trim().toLowerCase();
-              setUserEmail(email);
-              setUserName(savedSession.name || email.split('@')[0] || 'Operator');
-              setUserRole(email.includes('admin') ? 'admin' : (savedSession.role || 'operator'));
-              setShowLoginPage(false);
-
-              const initialPonds = getPondsForUser(email);
-              setUserLinkedPondIds(initialPonds);
-              if (initialPonds.length > 0) {
-                setHasLinkedDevice(true);
-                setActiveTab('home');
-              } else {
-                setHasLinkedDevice(false);
-                setActiveTab('addDevice');
-                setAllDevices([]);
-                setDevice(createDefaultEmptyDevice(email));
-              }
-              setIsAuthInitializing(false);
-              return;
-            }
-          } catch {}
-        }
+        // Firebase says nobody is signed in: clear the saved session (Firebase keeps its own
+        // offline login, so a real user stays signed in even without internet).
+        try {
+          localStorage.removeItem('oxynity_active_session');
+        } catch {}
 
         setShowLoginPage(true);
         setUserEmail(undefined);
@@ -388,7 +435,7 @@ export default function App() {
 
     setUserEmail(cleanEmail);
     setUserName(displayName);
-    setUserRole(role);
+    setUserRole(isAdminEmail(cleanEmail) ? 'admin' : 'operator');
     setShowLoginPage(false);
 
     const userPonds = getPondsForUser(cleanEmail);
@@ -423,7 +470,8 @@ export default function App() {
         (docSnap) => {
           setIsFirebaseConnected(true);
           if (docSnap.exists()) {
-            const data = docSnap.data() as DeviceTelemetry;
+            // pH / ORP / temperature / salinity shown with the admin's calibration applied
+            const data = applySensorCalibration(docSnap.data() as any) as DeviceTelemetry;
 
             // Multi-user authorization check:
             // Allow access ONLY if this device belongs to this user:
@@ -493,54 +541,72 @@ export default function App() {
               }
             }
 
+            // Show DO only when the sensor is really installed (admin list or live probe voltage)
+            data.doSensorEnabled = isSensorInstalled(data, 'do');
+
             // If user recently toggled status manually in the app, do NOT let a delayed snapshot overwrite the user's optimistic status!
             data.deviceId = data.deviceId || pondId;
-            const isRecentAppToggle = Date.now() - lastAppToggleTimeRef.current < 15000;
+            const isCommandActive =
+              targetAppStatusRef.current !== null &&
+              targetAppStatusRef.current.deviceId === data.deviceId &&
+              Date.now() - targetAppStatusRef.current.timestamp < 15000;
+
+            if (isCommandActive && data.status === targetAppStatusRef.current!.status) {
+              targetAppStatusRef.current = null;
+            }
+
+            const commandedStatus =
+              isCommandActive && targetAppStatusRef.current ? targetAppStatusRef.current.status : null;
 
             setAllDevices((prev) => {
               const idx = prev.findIndex((d) => d.deviceId === data.deviceId);
-              const currentDev = idx >= 0 ? prev[idx] : undefined;
-              const safeData = isRecentAppToggle && currentDev?.deviceId === data.deviceId
-                ? {
-                    ...data,
-                    status: currentDev.status,
-                    status2: currentDev.status2,
-                    isCoolingDown: currentDev.isCoolingDown,
-                  }
-                : data;
+
+              let merged: DeviceTelemetry = { ...data };
+              if (commandedStatus) {
+                merged.status = commandedStatus;
+                merged.status2 = commandedStatus === 'OFF' ? 'OFF' : merged.status2;
+              }
+
+              // Online for 5 minutes (300 seconds) from effective lastSeen
+              const effLastSeen = merged.lastSeen || merged.updatedAt;
+              const effDiffSecs = effLastSeen ? Math.max(0, Math.floor((Date.now() - new Date(effLastSeen).getTime()) / 1000)) : 9999;
+              merged.isOnline = effDiffSecs <= 300;
 
               if (idx >= 0) {
                 const next = [...prev];
-                next[idx] = safeData;
+                next[idx] = merged;
                 return next;
               }
-              return [...prev, safeData];
+              return [...prev, merged];
             });
 
             // Set current device if matching or not initialized yet or matching last selected pond
-            setDevice((current) => {
-              const safeData = isRecentAppToggle && current.deviceId === data.deviceId
-                ? {
-                    ...data,
-                    status: current.status,
-                    status2: current.status2,
-                    isCoolingDown: current.isCoolingDown,
-                  }
-                : data;
+            setDevice((currentDev) => {
+              const isRecentAppToggle = Date.now() - lastAppToggleTimeRef.current < 15000;
+              let safeData: DeviceTelemetry = { ...data };
+              if (commandedStatus || (isRecentAppToggle && currentDev?.deviceId === data.deviceId && currentDev?.status)) {
+                safeData.status = commandedStatus || currentDev.status;
+                safeData.status2 = safeData.status === 'OFF' ? 'OFF' : safeData.status2;
+              }
+
+              // Online for 5 minutes (300 seconds) from effective lastSeen
+              const effLastSeen = safeData.lastSeen || safeData.updatedAt;
+              const effDiffSecs = effLastSeen ? Math.max(0, Math.floor((Date.now() - new Date(effLastSeen).getTime()) / 1000)) : 9999;
+              safeData.isOnline = effDiffSecs <= 300;
 
               const lastSelectedId = localStorage.getItem(`oxynity_last_selected_pond_${cleanEmail}`);
               if (lastSelectedId && lastSelectedId === data.deviceId) {
                 return safeData;
               }
-              if (!current.deviceId || current.deviceId === data.deviceId) {
+              if (!currentDev.deviceId || currentDev.deviceId === data.deviceId) {
                 return safeData;
               }
-              return current;
+              return currentDev;
             });
           } else {
-            // Document missing in Firestore: seed if default device
-            if (pondId === DEFAULT_DEVICE_ID && cleanEmail === 'operator@oxynity.com') {
-              setDoc(docRef, initialDeviceData).catch(() => {});
+            // Document missing in Firestore: create the demo pond for the demo farmer only
+            if (pondId === DEMO_POND_ID && cleanEmail === DEMO_FARMER_EMAIL) {
+              setDoc(docRef, createDemoPond()).catch(() => {});
             }
           }
         },
@@ -556,11 +622,117 @@ export default function App() {
     };
   }, [userLinkedPondIds, userEmail, userRole]);
 
+  // 1b. Cloudflare KV High-Availability Live Bridge (Zero-Quota, Instant Real-Time Telemetry)
+  useEffect(() => {
+    const targetId = device.deviceId || 'OXY-ESP32-004';
+    if (!targetId) return;
+
+    let isMounted = true;
+    const fetchLiveBridge = async () => {
+      try {
+        const res = await fetch(`https://oxynity-pond-bridge.jhonsonraju2003.workers.dev/api/live?deviceId=${targetId}`);
+        if (!res.ok) return;
+        const live = await res.json();
+        if (live && live.success && isMounted) {
+          const nowIso = live.lastSeen || live.updatedAt;
+          if (!nowIso) return;
+          const diffSecs = Math.max(0, Math.floor((Date.now() - new Date(nowIso).getTime()) / 1000));
+          // Machine remains Online for up to 5 minutes (300 seconds); switches to Offline only after 5 min
+          const isDeviceOnline = diffSecs <= 300;
+          const isCommandActive =
+            targetAppStatusRef.current !== null &&
+            targetAppStatusRef.current.deviceId === targetId &&
+            Date.now() - targetAppStatusRef.current.timestamp < 15000;
+
+          if (isCommandActive && live.status === targetAppStatusRef.current!.status) {
+            targetAppStatusRef.current = null;
+          }
+
+          const commandedStatus =
+            isCommandActive && targetAppStatusRef.current ? targetAppStatusRef.current.status : null;
+
+          setDevice((prev) => {
+            if (prev.deviceId && prev.deviceId !== targetId) return prev;
+            const targetStatus = commandedStatus || live.status || prev.status;
+            const targetStatus2 = commandedStatus === 'OFF' ? 'OFF' : (commandedStatus === 'ON' ? (prev.status2 || live.status2) : (live.status2 || prev.status2));
+            return {
+              ...prev,
+              lastSeen: nowIso,
+              updatedAt: nowIso,
+              isOnline: isDeviceOnline,
+              status: targetStatus,
+              status2: targetStatus2,
+              currentSessionSeconds: live.currentSessionSeconds ?? prev.currentSessionSeconds,
+              currentSessionMinutes: live.currentSessionMinutes ?? prev.currentSessionMinutes,
+              totalRunSecToday: live.totalRunSecToday ?? prev.totalRunSecToday,
+              relay2RunSecToday: live.relay2RunSecToday ?? prev.relay2RunSecToday,
+              totalRunHours: live.totalRunHours ?? prev.totalRunHours,
+              firmwareScheduler: live.firmwareScheduler ?? true,
+            };
+          });
+          setAllDevices((prev) =>
+            prev.map((d) => {
+              if (d.deviceId === targetId) {
+                const targetStatus = commandedStatus || live.status || d.status;
+                const targetStatus2 = commandedStatus === 'OFF' ? 'OFF' : (commandedStatus === 'ON' ? (d.status2 || live.status2) : (live.status2 || d.status2));
+                return {
+                  ...d,
+                  lastSeen: nowIso,
+                  updatedAt: nowIso,
+                  isOnline: isDeviceOnline,
+                  status: targetStatus,
+                  status2: targetStatus2,
+                  currentSessionSeconds: live.currentSessionSeconds ?? d.currentSessionSeconds,
+                  currentSessionMinutes: live.currentSessionMinutes ?? d.currentSessionMinutes,
+                  totalRunSecToday: live.totalRunSecToday ?? d.totalRunSecToday,
+                  relay2RunSecToday: live.relay2RunSecToday ?? d.relay2RunSecToday,
+                  totalRunHours: live.totalRunHours ?? d.totalRunHours,
+                  firmwareScheduler: live.firmwareScheduler ?? true,
+                };
+              }
+              return d;
+            })
+          );
+        }
+      } catch (e) {
+        // bridge network timeout
+      }
+    };
+
+    fetchLiveBridgeRef.current = fetchLiveBridge;
+    fetchLiveBridge();
+    // Poll bridge every 30 seconds matching the ESP32 30-second heartbeat
+    const interval = setInterval(fetchLiveBridge, 30000);
+    return () => {
+      isMounted = false;
+      clearInterval(interval);
+    };
+  }, [device.deviceId]);
+
+  // Clean up any stale localStorage session timestamps older than 24h on startup
+  useEffect(() => {
+    try {
+      const keys = Object.keys(localStorage);
+      for (const k of keys) {
+        if (k.startsWith('oxynity_continuous_started_at_') || k.startsWith('oxynity_session_started_at_')) {
+          const val = localStorage.getItem(k);
+          if (val) {
+            const t = new Date(val).getTime();
+            if (isNaN(t) || Date.now() - t > 24 * 3600 * 1000) {
+              localStorage.removeItem(k);
+            }
+          }
+        }
+      }
+    } catch {}
+  }, []);
+
   // 2. Machine Session Runtime Timer (Increment seconds every 1s when ON and ONLINE)
   // When offline, timer pauses. When back online, it resumes from where it paused!
   // 2. Exact Session Runtime & Continuous Run Ticker (6-Hour Cooldown Watcher)
   useEffect(() => {
-    if (device.status !== 'ON' || !isRealEspOnline) return;
+    // Firmware v1.7+ counts run time, run hours and the 6 h rest on the machine itself
+    if (device.status !== 'ON' || !isRealEspOnline || device.firmwareScheduler) return;
 
     const interval = setInterval(() => {
       setDevice((prev) => {
@@ -607,38 +779,21 @@ export default function App() {
         // 6-Hour Auto-Cooldown Threshold Check: 6 * 3600 = 21,600 seconds
         const isCooldownEnabled = prev.cooldownEnabled !== false;
         if (isCooldownEnabled && continuousSecs >= 6 * 3600) {
-          // Trigger 30-minute cooling break!
-          setTimeout(() => {
-            const pondName = prev.name?.replace(/\(.*?\)/g, '').trim() || prev.deviceId || 'Pond';
-            const title = `[${pondName}] ❄️ MOTOR COOLDOWN REST STARTED`;
-            const msg = `[${pondName}] Generator ran for 6 continuous hours. Taking a 30-minute rest to protect the motor. Will auto-resume in 30 minutes.`;
+          const pondName = prev.name?.replace(/\(.*?\)/g, '').trim() || prev.deviceId || 'Pond';
+          const title = `[${pondName}] ❄️ 6-HOUR RUNTIME REACHED`;
+          const restM = restMinutesFor(prev);
+          const msg = `[${pondName}] Generator ran for 6 continuous hours. Motor rest recommended (${restM} mins).`;
 
-            const newAlert: DeviceAlert = {
-              id: `alt-cd-start-${Date.now()}`,
-              timestamp: new Date().toISOString(),
-              title,
-              message: msg,
-              severity: 'info',
-              read: false,
-            };
-            setAlerts((alertsPrev) => [newAlert, ...alertsPrev]);
-            sendLocalNotification(title, msg);
-
-            handleTogglePower('OFF', 'Auto Cooldown Started');
-          }, 0);
-
-          return {
-            ...prev,
-            status: 'OFF',
-            status2: 'OFF',
-            sessionStartedAt: '',
-            continuousStartedAt: '',
-            isCoolingDown: true,
-            cooldownEndsAt: new Date(Date.now() + 30 * 60 * 1000).toISOString(),
-            cooldownRemainingSeconds: 1800,
-            continuousRunSeconds: 0,
-            updatedAt: new Date().toISOString(),
+          const newAlert: DeviceAlert = {
+            id: `alt-cd-start-${Date.now()}`,
+            timestamp: new Date().toISOString(),
+            title,
+            message: msg,
+            severity: 'info',
+            read: false,
           };
+          setAlerts((alertsPrev) => [newAlert, ...alertsPrev]);
+          sendLocalNotification(title, msg);
         }
 
         const updated = {
@@ -675,11 +830,11 @@ export default function App() {
     }, 1000); // 1 sec tick for live H - M - S display
 
     return () => clearInterval(interval);
-  }, [device.status, isRealEspOnline, device.cooldownEnabled]);
+  }, [device.status, isRealEspOnline, device.cooldownEnabled, device.firmwareScheduler]);
 
   // 2b. Cooldown 30-Minute Rest Watcher (Auto resumes operation when 30 mins completes)
   useEffect(() => {
-    if (!device.isCoolingDown || !device.deviceId) return;
+    if (!device.isCoolingDown || !device.deviceId || device.firmwareScheduler) return;
 
     const interval = setInterval(() => {
       setDevice((prev) => {
@@ -690,11 +845,11 @@ export default function App() {
         const diffSecs = targetEnd > 0 ? Math.max(0, Math.floor((targetEnd - now) / 1000)) : Math.max(0, (prev.cooldownRemainingSeconds ?? 1800) - 1);
 
         if (diffSecs <= 0) {
-          // Cooldown 30 minutes rest finished! Auto resume generator!
+          // Cooldown rest finished! Update state and notify; do not auto-toggle power without user command
           setTimeout(() => {
             const pondName = prev.name?.replace(/\(.*?\)/g, '').trim() || prev.deviceId || 'Pond';
             const title = `[${pondName}] ⚡ MOTOR COOLDOWN COMPLETED`;
-            const msg = `[${pondName}] 30-minute motor rest completed! Generator has automatically resumed operation. Relay 2 starting in 2 minutes.`;
+            const msg = `[${pondName}] Motor rest completed! Ready for operation.`;
 
             const newAlert: DeviceAlert = {
               id: `alt-cd-end-${Date.now()}`,
@@ -707,7 +862,8 @@ export default function App() {
             setAlerts((alertsPrev) => [newAlert, ...alertsPrev]);
             sendLocalNotification(title, msg);
 
-            handleTogglePower('ON', 'Auto Cooldown Complete');
+            const ref = doc(db, 'devices', prev.deviceId);
+            setDoc(ref, { isCoolingDown: false, cooldownEndsAt: '', cooldownRemainingSeconds: 0, continuousRunSeconds: 0, updatedAt: new Date().toISOString() }, { merge: true }).catch(() => {});
           }, 0);
 
           return {
@@ -728,7 +884,7 @@ export default function App() {
     }, 1000);
 
     return () => clearInterval(interval);
-  }, [device.isCoolingDown, device.deviceId, device.cooldownEndsAt]);
+  }, [device.isCoolingDown, device.deviceId, device.cooldownEndsAt, device.firmwareScheduler]);
 
   // 3. Auto DO Protection Logic (Activates Generator when DO < minDoAlert, shuts off when DO reaches targetDo)
   useEffect(() => {
@@ -738,49 +894,40 @@ export default function App() {
     const targetLimit = device.targetDo ?? 8.5;
     const pondName = device.name?.replace(/\(.*?\)/g, '').trim() || device.deviceId || 'Pond';
 
-    // Condition 1: DO drops below minDoAlert -> ACTIVATE GENERATOR
+    // Condition 1: DO drops below minDoAlert -> Alert user
     if (device.autoMode && device.doLevel !== undefined && device.doLevel !== null && device.doLevel > 0 && device.doLevel < minLimit) {
       if (device.status === 'OFF') {
         autoStartedByDoRef.current = true;
-        handleTogglePower('ON', 'Auto DO Protection');
-
-        // Add auto-trigger alert
+        // Add DO alert without overriding manual app power control
         const newAlert: DeviceAlert = {
           id: `alt-${Date.now()}`,
           timestamp: new Date().toISOString(),
-          title: `[${pondName}] Auto-Oxygenation Triggered`,
-          message: `[${pondName}] DO dropped to ${(device.doLevel ?? 0).toFixed(1)} mg/L (Below min alert ${(minLimit ?? 5.0).toFixed(1)} mg/L). Generator started automatically.`,
+          title: `[${pondName}] Low Oxygen Alert`,
+          message: `[${pondName}] DO dropped to ${(device.doLevel ?? 0).toFixed(1)} mg/L (Below min alert ${(minLimit ?? 5.0).toFixed(1)} mg/L).`,
           severity: 'critical',
           read: false,
         };
 
         setAlerts((prev) => [newAlert, ...prev]);
 
-        // Push native mobile notification
         sendLocalNotification(
           `[${pondName}] ⚠️ LOW OXYGEN ALERT`,
-          `[${pondName}] DO dropped to ${(device.doLevel ?? 0).toFixed(1)} mg/L! Generator started automatically.`
+          `[${pondName}] DO dropped to ${(device.doLevel ?? 0).toFixed(1)} mg/L! Recommended to turn ON generator.`
         );
       }
     }
 
-    // Condition 2: DO reaches target level -> SHUT OFF GENERATOR
-    // ONLY auto-shutoff if:
-    // 1. autoMode is true
-    // 2. Generator was automatically activated by Auto DO (autoStartedByDoRef.current === true)
-    // 3. DO level has reached targetLimit
-    // 4. No manual app toggle has occurred recently (within 60s) so manual operator controls are NEVER interrupted
+    // Condition 2: DO reaches target level -> Alert user
     const isRecentManualToggle = Date.now() - lastAppToggleTimeRef.current < 60000;
     if (device.autoMode && device.doLevel !== undefined && device.doLevel !== null && device.doLevel >= targetLimit && !isRecentManualToggle) {
       if (device.status === 'ON' && autoStartedByDoRef.current) {
         autoStartedByDoRef.current = false;
-        handleTogglePower('OFF', 'Auto DO Target Reached');
 
         const newAlert: DeviceAlert = {
           id: `alt-${Date.now()}`,
           timestamp: new Date().toISOString(),
           title: `[${pondName}] Target DO Restored`,
-          message: `[${pondName}] DO recovered to ${(device.doLevel ?? 0).toFixed(1)} mg/L (Target ${(targetLimit ?? 7.5).toFixed(1)} mg/L reached). Generator stopped automatically.`,
+          message: `[${pondName}] DO recovered to ${(device.doLevel ?? 0).toFixed(1)} mg/L (Target ${(targetLimit ?? 7.5).toFixed(1)} mg/L reached).`,
           severity: 'info',
           read: false,
         };
@@ -789,7 +936,7 @@ export default function App() {
 
         sendLocalNotification(
           `[${pondName}] ✅ Target Oxygen Restored`,
-          `[${pondName}] DO recovered to ${(device.doLevel ?? 0).toFixed(1)} mg/L. Generator turned off automatically.`
+          `[${pondName}] DO recovered to ${(device.doLevel ?? 0).toFixed(1)} mg/L.`
         );
       }
     }
@@ -834,7 +981,16 @@ export default function App() {
       const isAppTrigger = Date.now() - lastAppToggleTimeRef.current < 20000;
 
       if (current === 'ON') {
-        const source = isAppTrigger ? 'Mobile App Switch' : 'Manual Green Push Button (Panel)';
+        let source = 'Mobile App Switch';
+        if (isAppTrigger) {
+          source = 'Mobile App Switch';
+        } else if (device.manualButtonTrigger === 'START' || device.triggerSource === 'Green Button') {
+          source = 'Manual Green Push Button (Panel)';
+        } else if (device.triggerSource?.includes('Schedule')) {
+          source = 'Scheduled Timer';
+        } else {
+          source = device.triggerSource || 'Mobile App Switch';
+        }
         const title = `[${pondName}] ⚡ GENERATOR STARTED`;
         const msg = `[${pondName}] Generator is now RUNNING via ${source}. Relay 2 starting automatically in 2 minutes.`;
 
@@ -849,7 +1005,18 @@ export default function App() {
         setAlerts((prevAlerts) => [newAlert, ...prevAlerts]);
         sendLocalNotification(title, msg);
       } else if (current === 'OFF') {
-        const source = isAppTrigger ? 'Mobile App Switch' : 'Manual Red Push Button (Emergency Cutoff)';
+        let source = 'Mobile App Switch';
+        if (isAppTrigger) {
+          source = 'Mobile App Switch';
+        } else if (device.manualButtonTrigger === 'STOP' || device.triggerSource === 'Red Button') {
+          source = 'Manual Red Push Button (Emergency Cutoff)';
+        } else if (device.isCoolingDown || device.triggerSource?.includes('Cooldown') || device.triggerSource?.includes('Rest')) {
+          source = '30-Minute Motor Cooldown Rest';
+        } else if (device.triggerSource?.includes('Schedule')) {
+          source = 'Scheduled Timer';
+        } else {
+          source = device.triggerSource || 'Mobile App Switch';
+        }
         const title = `[${pondName}] 🛑 GENERATOR STOPPED`;
         const msg = `[${pondName}] Generator stopped via ${source}. All aerator relays safely shut down.`;
 
@@ -971,7 +1138,11 @@ export default function App() {
           cleanUpdates[key] = val;
         }
       }
-      await setDoc(docRef, cleanUpdates, { merge: true });
+      const writePromise = setDoc(docRef, cleanUpdates, { merge: true });
+      const timeoutPromise = new Promise((_, reject) =>
+        setTimeout(() => reject(new Error('Firestore write timeout')), 2500)
+      );
+      await Promise.race([writePromise, timeoutPromise]);
     } catch (err) {
       console.warn('Syncing to local state (Firestore offline fallback):', err);
     } finally {
@@ -996,9 +1167,16 @@ export default function App() {
     const targetId = targetDeviceId || device.deviceId;
     if (!targetId) return;
 
+    fetch('https://oxynity-pond-bridge.jhonsonraju2003.workers.dev/api/command', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ deviceId: targetId, action: newStatus }),
+    }).catch(() => {});
+
     const targetDev = allDevices.find((d) => d.deviceId === targetId) || (device.deviceId === targetId ? device : undefined) || device;
 
     lastAppToggleTimeRef.current = Date.now();
+    targetAppStatusRef.current = { deviceId: targetId, status: newStatus, timestamp: Date.now() };
     if (triggerSource === 'Manual App Control' || newStatus === 'OFF') {
       autoStartedByDoRef.current = false;
     }
@@ -1007,6 +1185,8 @@ export default function App() {
     const updates: Partial<DeviceTelemetry> = {
       status: newStatus,
       status2: newStatus === 'OFF' ? 'OFF' : targetDev.status2,
+      triggerSource: 'Manual App Control',
+      manualButtonTrigger: '',
       currentSessionSeconds: newStatus === 'OFF' ? 0 : currentSecs,
       currentSessionMinutes: newStatus === 'OFF' ? 0 : Math.floor(currentSecs / 60),
       updatedAt: nowIso,
@@ -1017,24 +1197,16 @@ export default function App() {
     if (newStatus === 'OFF') {
       updates.sessionStartedAt = '';
       updates.continuousStartedAt = '';
-      if (triggerSource === 'Auto Cooldown Started') {
-        updates.isCoolingDown = true;
-        updates.cooldownEndsAt = new Date(Date.now() + 30 * 60 * 1000).toISOString();
-        updates.cooldownRemainingSeconds = 30 * 60;
-        updates.continuousRunSeconds = 0;
-      } else {
-        // Normal manual stop before 6 hours: clear cooldown and continuous running seconds!
-        updates.isCoolingDown = false;
-        updates.cooldownEndsAt = '';
-        updates.cooldownRemainingSeconds = 0;
-        updates.continuousRunSeconds = 0;
-        try {
-          localStorage.removeItem(`oxynity_continuous_run_${targetId}`);
-          localStorage.removeItem(`oxynity_session_elapsed_${targetId}`);
-          localStorage.removeItem(`oxynity_session_started_at_${targetId}`);
-          localStorage.removeItem(`oxynity_continuous_started_at_${targetId}`);
-        } catch {}
-      }
+      updates.isCoolingDown = false;
+      updates.cooldownEndsAt = '';
+      updates.cooldownRemainingSeconds = 0;
+      updates.continuousRunSeconds = 0;
+      try {
+        localStorage.removeItem(`oxynity_continuous_run_${targetId}`);
+        localStorage.removeItem(`oxynity_session_elapsed_${targetId}`);
+        localStorage.removeItem(`oxynity_session_started_at_${targetId}`);
+        localStorage.removeItem(`oxynity_continuous_started_at_${targetId}`);
+      } catch {}
     } else {
       // Starting machine: record fresh start timestamps and clear cooldown
       updates.isCoolingDown = false;
@@ -1042,12 +1214,10 @@ export default function App() {
       updates.cooldownRemainingSeconds = 0;
       updates.continuousRunSeconds = 0;
       updates.sessionStartedAt = nowIso;
-      updates.continuousStartedAt = targetDev.continuousStartedAt || nowIso;
+      updates.continuousStartedAt = nowIso;
       try {
         localStorage.setItem(`oxynity_session_started_at_${targetId}`, nowIso);
-        if (!targetDev.continuousStartedAt) {
-          localStorage.setItem(`oxynity_continuous_started_at_${targetId}`, nowIso);
-        }
+        localStorage.setItem(`oxynity_continuous_started_at_${targetId}`, nowIso);
         localStorage.setItem(`oxynity_session_elapsed_${targetId}`, '0');
         localStorage.setItem(`oxynity_continuous_run_${targetId}`, '0');
       } catch {}
@@ -1055,6 +1225,7 @@ export default function App() {
 
     // Calculate session duration if stopping
     let durationStr: string | undefined = undefined;
+    let durationSecNum = 0;
     if (newStatus === 'OFF') {
       let finalSecs = currentSecs;
       const started =
@@ -1066,6 +1237,7 @@ export default function App() {
           finalSecs = Math.max(finalSecs, Math.floor((Date.now() - t) / 1000));
         }
       }
+      durationSecNum = finalSecs;
       if (finalSecs > 0) {
         const h = Math.floor(finalSecs / 3600);
         const m = Math.floor((finalSecs % 3600) / 60);
@@ -1088,6 +1260,15 @@ export default function App() {
 
     setStartStopLogs((prev) => [newLog, ...prev]);
 
+    // Save the start/stop record in the cloud so admin and customer see the same history
+    try {
+      const entry = JSON.parse(JSON.stringify({ ...newLog, deviceId: targetId, by: userEmail || '', ...(newStatus === 'OFF' ? { durationSec: durationSecNum } : {}) }));
+      // Full history (whole crop) lives in devices/{id}/runLog; the device doc keeps only the latest 500
+      setDoc(doc(db, 'devices', targetId, 'runLog', entry.id), entry).catch(() => {});
+      const prevLogs = Array.isArray(targetDev.runLogs) ? targetDev.runLogs : [];
+      (updates as any).runLogs = [entry, ...prevLogs].slice(0, 500);
+    } catch {}
+
     // Append telemetry history point
     const newPoint: TelemetryPoint = {
       timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
@@ -1098,6 +1279,9 @@ export default function App() {
     setTelemetryHistory((prev) => [...prev.slice(1), newPoint]);
 
     updateDeviceInFirebase(updates, targetId);
+    setTimeout(() => {
+      fetchLiveBridgeRef.current?.();
+    }, 1500);
   };
 
   const handleOverrideCooldown = () => {
@@ -1204,114 +1388,59 @@ export default function App() {
   // ---------------------------------------------------------------------------
   // 3e. Automated Aerator Schedule Execution Engine (Evaluates every 10 seconds)
   // ---------------------------------------------------------------------------
-  const lastScheduleCheckMinuteRef = useRef<string>('');
-
+  // Window-based schedule runner:
+  // - works whether Auto (DO) mode is on or off (each schedule has its own enable switch)
+  // - catches up if the app is opened after the start time (e.g. opened 6:20 for a 6:00 start)
+  // - supports overnight windows (10 PM - 4 AM)
+  // - after the stop time it turns the generator OFF and cancels a running 30-min rest
+  // NOTE: this only runs while the app is open. Final fix = same logic in the ESP32 firmware.
   useEffect(() => {
     if (!device.deviceId) return;
 
-    const interval = setInterval(() => {
-      const now = new Date();
-      const currentHours24 = now.getHours(); // 0-23
-      const currentMinutes = now.getMinutes(); // 0-59
-      const currentNowMins = currentHours24 * 60 + currentMinutes;
-      const todayStr = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
-      const minuteKey = `${todayStr}_${currentHours24}:${currentMinutes}`;
-
-      if (lastScheduleCheckMinuteRef.current === minuteKey) return;
-
-      if (!device.autoMode) return;
-
+    const check = () => {
+      // Home "Schedule" switch (older ponds without the field follow Auto mode, as before)
+      // Firmware v1.7+ runs the schedules on the machine (works with every phone closed)
+      if (device.firmwareScheduler) return;
+      const schedOn = device.scheduleEnabled ?? device.autoMode;
+      if (!schedOn) return;
       const schedules = device.schedules || [];
       if (!Array.isArray(schedules) || schedules.length === 0) return;
+      const now = new Date();
+      const pondName = device.name?.replace(/\(.*?\)/g, '').trim() || device.deviceId || 'Pond';
+      const anyOpen = schedules.some((x) => x && x.enabled && scheduleWindow(x, now).inWin);
+      const fmt = (h: number, m: number, a: string) => `${h}:${String(m).padStart(2, '0')} ${a}`;
+      const notify = (kind: 'start' | 'stop', title: string, msg: string) => {
+        sendLocalNotification(title, msg);
+        setAlerts((prev) => [
+          { id: `alt-sch-${kind}-${Date.now()}`, timestamp: new Date().toISOString(), title, message: msg, severity: 'info', read: false },
+          ...prev,
+        ]);
+      };
 
-      let schedulesChanged = false;
-      const updatedSchedules = schedules.map((sch) => {
-        if (!sch.enabled) return sch;
-
-        const toMinutesFromMidnight = (hour: number, minute: number, ampm: 'AM' | 'PM') => {
-          let h = hour % 12;
-          if (ampm === 'PM') h += 12;
-          return h * 60 + minute;
-        };
-
-        const startMins = toMinutesFromMidnight(sch.startHour, sch.startMinute, sch.startAmPm);
-        const stopMins = toMinutesFromMidnight(sch.stopHour, sch.stopMinute, sch.stopAmPm);
-        const pondName = device.name?.replace(/\(.*?\)/g, '').trim() || device.deviceId || 'Pond';
-
-        // Check START condition (exact minute match)
-        if (currentNowMins === startMins) {
-          if (sch.lastTriggeredAction !== 'START' || sch.lastTriggeredDate !== todayStr) {
-            lastScheduleCheckMinuteRef.current = minuteKey;
-            schedulesChanged = true;
-
-            if (device.status === 'OFF') {
-              handleTogglePower('ON', `Schedule: ${sch.name}`);
-              const title = `[${pondName}] ⏰ Scheduled Aeration Started`;
-              const msg = `"${sch.name}" reached start time (${sch.startHour}:${String(sch.startMinute).padStart(2, '0')} ${sch.startAmPm}). Aerator turned ON automatically.`;
-              sendLocalNotification(title, msg);
-              setAlerts((prev) => [
-                {
-                  id: `alt-sch-start-${Date.now()}`,
-                  timestamp: new Date().toISOString(),
-                  title,
-                  message: msg,
-                  severity: 'info',
-                  read: false,
-                },
-                ...prev,
-              ]);
-            }
-
-            return {
-              ...sch,
-              lastTriggeredAction: 'START' as const,
-              lastTriggeredDate: todayStr,
-            };
-          }
+      let changed = false;
+      const updated = schedules.map((sch) => {
+        if (!sch || !sch.enabled) return sch;
+        const w = scheduleWindow(sch, now);
+        if (w.inWin) {
+          if (sch.lastTriggeredAction === 'START' && sch.lastTriggeredDate === w.key) return sch;
+          changed = true;
+          // Note: Power switching is handled on-device by firmware scheduler (oxynity_scheduler)
+          return { ...sch, lastTriggeredAction: 'START' as const, lastTriggeredDate: w.key };
         }
-
-        // Check STOP condition (exact minute match)
-        if (currentNowMins === stopMins) {
-          if (sch.lastTriggeredAction !== 'STOP' || sch.lastTriggeredDate !== todayStr) {
-            lastScheduleCheckMinuteRef.current = minuteKey;
-            schedulesChanged = true;
-
-            if (device.status === 'ON') {
-              handleTogglePower('OFF', `Schedule: ${sch.name}`);
-              const title = `[${pondName}] ⏰ Scheduled Aeration Stopped`;
-              const msg = `"${sch.name}" reached stop time (${sch.stopHour}:${String(sch.stopMinute).padStart(2, '0')} ${sch.stopAmPm}). Aerator turned OFF automatically.`;
-              sendLocalNotification(title, msg);
-              setAlerts((prev) => [
-                {
-                  id: `alt-sch-stop-${Date.now()}`,
-                  timestamp: new Date().toISOString(),
-                  title,
-                  message: msg,
-                  severity: 'info',
-                  read: false,
-                },
-                ...prev,
-              ]);
-            }
-
-            return {
-              ...sch,
-              lastTriggeredAction: 'STOP' as const,
-              lastTriggeredDate: todayStr,
-            };
-          }
+        if (sch.lastTriggeredAction === 'START') {
+          changed = true;
+          return { ...sch, lastTriggeredAction: 'STOP' as const, lastTriggeredDate: w.key };
         }
-
         return sch;
       });
 
-      if (schedulesChanged) {
-        handleUpdateSchedules(updatedSchedules, device.deviceId);
-      }
-    }, 10000);
+      if (changed) handleUpdateSchedules(updated, device.deviceId);
+    };
 
+    check();
+    const interval = setInterval(check, 10000);
     return () => clearInterval(interval);
-  }, [device.schedules, device.deviceId, device.status, device.name]);
+  }, [device.schedules, device.deviceId, device.status, device.name, device.isCoolingDown, device.scheduleEnabled, device.autoMode, device.firmwareScheduler]);
 
   const unreadAlertCount = alerts.filter((a) => !a.read).length;
 
@@ -1390,8 +1519,8 @@ export default function App() {
       calibratedLocationName: '',
       calibratedCellLac: '',
       calibratedCellId: '',
-      locationSource: 'SIM900A GPRS Cell LBS',
-      locationName: 'SIM900A Cellular Station',
+      locationSource: 'SIMCom A7672S 4G LTE',
+      locationName: 'SIMCom A7672S 4G Station',
     });
   };
 
@@ -1498,11 +1627,12 @@ export default function App() {
               onCancelCooldown={handleCancelCooldown}
               isUpdating={isUpdating}
               onOpenAddDevice={() => setActiveTab('addDevice')}
-              sensorsEnabled={sensorsEnabled}
-              isOnline={isSimulatingOffline ? false : (!isFirebaseConnected ? false : undefined)}
+              sensorsEnabled={visibleSensors}
+              isOnline={isRealEspOnline}
               onDeletePond={handleDeletePond}
               onEditPondName={handleEditPondName}
               onUpdateSchedules={handleUpdateSchedules}
+              onToggleSchedule={(enabled) => updateDeviceInFirebase({ scheduleEnabled: enabled })}
             />
           )}
 
@@ -1510,11 +1640,12 @@ export default function App() {
           {(activeTab === 'reports' || activeTab === 'analytics') && (
             <ReportsView
               device={device}
-              startStopLogs={startStopLogs}
+              startStopLogs={Array.isArray(device.runLogs) && device.runLogs.length ? (device.runLogs as any) : startStopLogs}
               telemetryHistory={telemetryHistory}
               userName={userName || 'Operator'}
-              sensorsEnabled={sensorsEnabled}
+              sensorsEnabled={visibleSensors}
               tempUnit={tempUnit}
+              onSaveCropDates={(from, to) => updateDeviceInFirebase({ cropStartDate: from, cropEndDate: to })}
             />
           )}
 
@@ -1530,7 +1661,8 @@ export default function App() {
               }}
               onUpdateSchedules={handleUpdateSchedules}
               isOnline={isRealEspOnline}
-              sensorsEnabled={sensorsEnabled}
+              sensorsEnabled={visibleSensors}
+              installedSensors={effectiveSensors(device) as EnabledSensors}
               onToggleSensor={handleToggleSensor}
             />
           )}
@@ -1541,6 +1673,7 @@ export default function App() {
               device={device}
               userName={userName}
               userEmail={userEmail}
+              myPondIds={userLinkedPondIds}
             />
           )}
 
@@ -1585,13 +1718,16 @@ export default function App() {
               onDeleteAccount={handleDeleteAccount}
               onDeletePond={handleDeletePond}
               onSwitchToAdmin={
-                (userRole === 'admin' || userEmail?.toLowerCase().includes('admin'))
+                (userRole === 'admin' && isAdminEmail(userEmail))
                   ? () => setUserRole('admin')
                   : undefined
               }
             />
           )}
         </main>
+
+        {/* Loud warning when a pond's machine stops reporting (possible power cut) */}
+        <AlarmCenter devices={allDevices} />
 
         {/* Mobile Bottom Navigation: Home, Reports, Sensors, Service */}
         <BottomNav activeTab={activeTab} onChangeTab={handleTabChange} hasDeviceLinked={hasLinkedDevice} />

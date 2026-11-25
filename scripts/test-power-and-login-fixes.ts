@@ -44,9 +44,9 @@ assert(
 );
 
 assert(
-  loginPageSource.includes("cleanEmail.toLowerCase().includes('admin')"),
+  loginPageSource.includes('isAdminAccount(cleanEmail)') && !loginPageSource.includes(".includes('admin')"),
   SUITE_1,
-  'Admin role assignment strictly requires admin credentials in login email'
+  'Admin role only for the exact admin email list (not any email containing "admin")'
 );
 
 // -------------------------------------------------------------------------
@@ -61,9 +61,9 @@ const appSource = fs.readFileSync(
 );
 
 assert(
-  appSource.includes("userRole === 'admin' || userEmail?.toLowerCase().includes('admin')"),
+  appSource.includes("userRole === 'admin' && isAdminEmail(userEmail)"),
   SUITE_2,
-  'onSwitchToAdmin is guarded to only admin roles or admin email addresses'
+  'onSwitchToAdmin is guarded to admin role AND an approved admin email'
 );
 
 // -------------------------------------------------------------------------

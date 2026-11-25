@@ -1,3 +1,12 @@
+import { MachineSpecsEditor } from './admin/MachineSpecsEditor';
+import { motorKwOf } from '../lib/oxynity';
+import { AlarmCenter } from './AlarmCenter';
+import { DataDownload } from './admin/DataDownload';
+import { applySensorCalibration } from '../lib/oxynity';
+import { FleetMap } from './admin/FleetMap';
+import { SensorSetup } from './admin/SensorSetup';
+import { isSensorInstalled } from '../lib/oxynity';
+import { InstalledSensorsEditor } from './admin/InstalledSensorsEditor';
 import React, { useState, useEffect, useMemo, useRef } from 'react';
 import {
   DeviceTelemetry,
@@ -25,6 +34,7 @@ import { AdminUserManagement } from './admin/AdminUserManagement';
 import { AdminContentManagement } from './admin/AdminContentManagement';
 import { AdminNotificationsHub } from './admin/AdminNotificationsHub';
 import { LiveGprsMap } from './LiveGprsMap';
+import { Geolocation } from '@capacitor/geolocation';
 import {
   Search,
   MapPin,
@@ -60,7 +70,22 @@ import {
   RefreshCw,
   Snowflake,
   Timer,
+  LocateFixed,
+  Lock,
+  Unlock,
+  Radio,
+  Check,
 } from 'lucide-react';
+
+/** Users saved by the User Management screen (stored on this phone only). */
+const savedAdminUsers = (): any[] => {
+  try {
+    const v = JSON.parse(localStorage.getItem('oxynity_admin_users') || '[]');
+    return Array.isArray(v) ? v : [];
+  } catch {
+    return [];
+  }
+};
 
 interface AdminDashboardProps {
   currentDevice: DeviceTelemetry;
@@ -100,6 +125,21 @@ const P = (lat: number, lon: number): [number, number] => [
   (37 - lat) * 20,
 ];
 
+export function calculateHaversineKm(lat1: number, lon1: number, lat2: number, lon2: number): number {
+  if (!lat1 || !lon1 || !lat2 || !lon2) return 0;
+  const R = 6371; // Earth radius in km
+  const dLat = ((lat2 - lat1) * Math.PI) / 180;
+  const dLon = ((lon2 - lon1) * Math.PI) / 180;
+  const a =
+    Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+    Math.cos((lat1 * Math.PI) / 180) *
+      Math.cos((lat2 * Math.PI) / 180) *
+      Math.sin(dLon / 2) *
+      Math.sin(dLon / 2);
+  const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+  return R * c;
+}
+
 
 
 export const AdminDashboard: React.FC<AdminDashboardProps> = ({
@@ -112,6 +152,28 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
   onResetCalibration,
 }) => {
   // Splash Screen State
+  // The admin panel is designed in light colours only. If the phone (or the farmer app) is in dark
+  // mode, shared cards and inputs turned dark while admin text stayed dark = unreadable. Force light
+  // while the admin panel is open and restore the previous theme when it closes.
+  useEffect(() => {
+    const html = document.documentElement;
+    const prevTheme = html.getAttribute('data-theme');
+    const hadDark = html.classList.contains('dark');
+    const force = () => {
+      if (html.classList.contains('dark')) html.classList.remove('dark');
+      if (html.getAttribute('data-theme') !== 'light') html.setAttribute('data-theme', 'light');
+    };
+    force();
+    const mo = new MutationObserver(force);
+    mo.observe(html, { attributes: true, attributeFilter: ['class', 'data-theme'] });
+    return () => {
+      mo.disconnect();
+      if (prevTheme) html.setAttribute('data-theme', prevTheme);
+      else html.removeAttribute('data-theme');
+      if (hadDark) html.classList.add('dark');
+    };
+  }, []);
+
   const [showSplash, setShowSplash] = useState<boolean>(() => {
     return !sessionStorage.getItem('oxynity_admin_splash_dismissed');
   });
@@ -166,7 +228,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
         collection(db, 'devices'),
         (snap) => {
           const firestoreDevices: DeviceTelemetry[] = snap.docs.map((d) => {
-            const data = d.data() as DeviceTelemetry;
+            const data = applySensorCalibration(d.data() as any) as DeviceTelemetry;
             return {
               ...data,
               deviceId: data.deviceId || d.id,
@@ -289,10 +351,9 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
   };
 
   // Complaints & Jobs data
-  const [complaints, setComplaints] = useState<AdminComplaintRecord[]>(() =>
-    generateAdminComplaints(fleet)
-  );
-  const [jobs, setJobs] = useState<AdminJobRecord[]>(() => generateAdminJobs(fleet));
+  // Only real complaints / jobs (no generated sample data for real customers)
+  const [complaints, setComplaints] = useState<AdminComplaintRecord[]>([]);
+  const [jobs, setJobs] = useState<AdminJobRecord[]>([]);
 
   // Map State
   const [mapState, setMapState] = useState<string>('All');
@@ -324,8 +385,6 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
   // Seed jobs, complaints, and default newComplaintDevice once fleet loads if empty
   useEffect(() => {
     if (fleet.length > 0) {
-      setJobs((prev) => (prev.length === 0 ? generateAdminJobs(fleet) : prev));
-      setComplaints((prev) => (prev.length === 0 ? generateAdminComplaints(fleet) : prev));
       setNewComplaintDevice((prev) => (prev ? prev : fleet[0].id));
     }
   }, [fleet]);
@@ -355,7 +414,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
             const data = d.data();
             return {
               id: d.id,
-              device: data.deviceId || 'OXY-0113',
+              device: data.deviceId || '',
               issue: data.desc || data.type || 'Service Request',
               priority: (data.priority as 'High' | 'Medium' | 'Low') || 'Medium',
               source: data.source || 'Farmer app',
@@ -364,7 +423,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
               farmer: data.farmer || 'Farmer Operator',
               place: data.place || data.pondName || 'Primary Pond',
               tech: data.tech || 'Unassigned',
-              phone: data.phone || '+91 98480 00000',
+              phone: data.phone || '',
               messages: Array.isArray(data.messages) ? data.messages : [],
               createdAt: data.createdAt || data.date,
             };
@@ -399,10 +458,170 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
   const [pushAlertsEnabled, setPushAlertsEnabled] = useState<boolean>(true);
 
   // System Tools Sub-Modal State (for legacy admin sub-modules)
+  // Sensor setup & calibration wizard: null = closed, '' = open with first machine, id = open for that machine
+  const [sensorSetupFor, setSensorSetupFor] = useState<string | null>(null);
   const [showSystemTools, setShowSystemTools] = useState<boolean>(false);
   const [systemToolsTab, setSystemToolsTab] = useState<
     'users' | 'content' | 'notifications' | 'calibrate'
   >('users');
+  // SIMCom A7672S 4G LTE Geofence & Calibration State
+  const [calibratingDeviceId, setCalibratingDeviceId] = useState<string | null>(null);
+  const [showLiveMapInDetail, setShowLiveMapInDetail] = useState<boolean>(false);
+  const [manualCalibrateModal, setManualCalibrateModal] = useState<{
+    open: boolean;
+    deviceId: string;
+    pondName: string;
+    lat: string;
+    lng: string;
+    name: string;
+  } | null>(null);
+
+  // Real-time Geofence Breach Detection (Alert when machine moves > 1.0 km from locked anchor)
+  const geofenceBreaches = useMemo(() => {
+    return fleet.filter((d) => {
+      const raw = d.rawTelemetry;
+      if (!raw) return false;
+      if (raw.isGeofenceBreached) return true;
+      const calLat = raw.calibratedLatitude;
+      const calLng = raw.calibratedLongitude;
+      const liveLat = raw.latitude;
+      const liveLng = raw.longitude;
+      if (
+        calLat &&
+        calLng &&
+        liveLat &&
+        liveLng &&
+        Math.abs(calLat) > 0.01 &&
+        Math.abs(liveLat) > 0.01
+      ) {
+        const dist = calculateHaversineKm(calLat, calLng, liveLat, liveLng);
+        if (dist > 1.0) return true;
+      }
+      return (raw.moveDistanceKm ?? 0) > 1.0;
+    });
+  }, [fleet]);
+
+  const handleCalibratePondLocation = async (
+    targetDeviceId: string,
+    lat: number,
+    lng: number,
+    locName: string
+  ) => {
+    try {
+      const docRef = doc(db, 'devices', targetDeviceId);
+      await setDoc(
+        docRef,
+        {
+          latitude: lat,
+          longitude: lng,
+          calibratedLatitude: lat,
+          calibratedLongitude: lng,
+          calibratedLocationName: locName,
+          calibratedAt: new Date().toISOString(),
+          isCalibrated: true,
+          isMoving: false,
+          moveDistanceKm: 0,
+          isGeofenceBreached: false,
+          geofenceRadiusKm: 1.0,
+          locationName: locName,
+          locationSource: 'A7672S Calibrated Anchor (1 km Radius Lock)',
+          updatedAt: new Date().toISOString(),
+        },
+        { merge: true }
+      );
+      if (onCalibrateLocation && targetDeviceId === currentDevice?.deviceId) {
+        await onCalibrateLocation(lat, lng, locName);
+      }
+      showToast(`✓ Pond ${targetDeviceId} location calibrated & locked within 1.0 km radius!`);
+    } catch (err: any) {
+      console.error('Calibration error:', err);
+      showToast(`Failed to calibrate location: ${err?.message || err}`);
+    }
+  };
+
+  const handleResetPondCalibration = async (targetDeviceId: string) => {
+    try {
+      const docRef = doc(db, 'devices', targetDeviceId);
+      await setDoc(
+        docRef,
+        {
+          isCalibrated: false,
+          isMoving: false,
+          moveDistanceKm: 0,
+          isGeofenceBreached: false,
+          calibratedLatitude: 0,
+          calibratedLongitude: 0,
+          calibratedLocationName: '',
+          calibratedAt: '',
+          updatedAt: new Date().toISOString(),
+        },
+        { merge: true }
+      );
+      if (onResetCalibration && targetDeviceId === currentDevice?.deviceId) {
+        await onResetCalibration();
+      }
+      showToast(`✓ Pond ${targetDeviceId} anchor reset.`);
+    } catch (err: any) {
+      console.error('Reset calibration error:', err);
+      showToast(`Failed to reset calibration: ${err?.message || err}`);
+    }
+  };
+
+  const handleDetectFromPhoneGps = async (targetDeviceId: string) => {
+    setCalibratingDeviceId(targetDeviceId);
+    try {
+      let lat: number | null = null;
+      let lng: number | null = null;
+
+      try {
+        const pos = await Geolocation.getCurrentPosition({
+          enableHighAccuracy: true,
+          timeout: 15000,
+        });
+        lat = pos.coords.latitude;
+        lng = pos.coords.longitude;
+      } catch (geoErr) {
+        if ('geolocation' in navigator) {
+          const pos = await new Promise<GeolocationPosition>((resolve, reject) => {
+            navigator.geolocation.getCurrentPosition(resolve, reject, {
+              enableHighAccuracy: true,
+              timeout: 15000,
+            });
+          });
+          lat = pos.coords.latitude;
+          lng = pos.coords.longitude;
+        } else {
+          throw geoErr;
+        }
+      }
+
+      if (lat !== null && lng !== null) {
+        const roundedLat = parseFloat(lat.toFixed(6));
+        const roundedLng = parseFloat(lng.toFixed(6));
+        const locName = `Pond Anchor (${roundedLat.toFixed(4)}, ${roundedLng.toFixed(4)})`;
+        await handleCalibratePondLocation(targetDeviceId, roundedLat, roundedLng, locName);
+      } else {
+        throw new Error('Unable to acquire phone GPS coordinates');
+      }
+    } catch (err: any) {
+      console.error('Phone GPS calibration error:', err);
+      showToast(`GPS Detection failed: ${err?.message || 'Permission denied or timed out'}`);
+    } finally {
+      setCalibratingDeviceId(null);
+    }
+  };
+
+  const handleDetectFromDeviceGps = async (dev: AdminDeviceRecord) => {
+    const raw = dev.rawTelemetry;
+    if (!raw?.latitude || !raw?.longitude || Math.abs(raw.latitude) < 0.01) {
+      showToast('⚠️ SIMCom A7672S 4G module has not acquired a live GPS fix yet. Verify antenna.');
+      return;
+    }
+    const lat = parseFloat(raw.latitude.toFixed(6));
+    const lng = parseFloat(raw.longitude.toFixed(6));
+    const locName = `A7672S 4G GNSS Anchor (${lat.toFixed(4)}, ${lng.toFixed(4)})`;
+    await handleCalibratePondLocation(dev.id, lat, lng, locName);
+  };
 
   // Helpers
   const shortOf = (d: AdminDeviceRecord) => {
@@ -766,6 +985,11 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
     <div className="h-screen w-full bg-[#F1F5F9] text-[#0F2233] font-sans antialiased selection:bg-[#0E6FA3] selection:text-white flex flex-col items-center overflow-y-auto overflow-x-hidden">
       {/* ── Optional Opening Splash Screen ── */}
       {showSplash && <OxynitySplashScreen onDismiss={handleDismissSplash} />}
+      {/* Loud warnings: new service requests + pond power-off / offline */}
+      <AlarmCenter devices={fleet.map((d) => d.rawTelemetry).filter(Boolean)} watchServiceRequests />
+      {sensorSetupFor !== null && (
+        <SensorSetup fleet={fleet} initialDeviceId={sensorSetupFor || null} adminEmail={adminEmail} onClose={() => setSensorSetupFor(null)} />
+      )}
 
       {/* ── Toast Notification Bar ── */}
       {toastMessage && (
@@ -793,6 +1017,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
               ? 'px-3 py-3 rounded-b-2xl'
               : 'px-4 sm:px-6 pt-3.5 pb-4 rounded-b-[24px] sm:rounded-b-[28px]'
           } shadow-lg flex flex-col gap-2.5 shrink-0 w-full overflow-hidden`}
+          style={{ paddingTop: 'max(env(safe-area-inset-top, 0px), 12px)' }}
         >
           {/* Top Row: Animated Spray Logo & Title + Actions */}
           <div className="flex items-center justify-between gap-2 w-full min-w-0">
@@ -974,6 +1199,42 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
           )}
         </header>
 
+        {/* 🚨 GEOFENCE BREACH ALERT BANNER (> 1.0 KM RADIUS) */}
+        {geofenceBreaches.length > 0 && (
+          <div className="mx-3 sm:mx-5 mt-3 p-3.5 sm:p-4 bg-gradient-to-r from-rose-50 via-rose-100 to-rose-50 border-2 border-rose-500 rounded-2xl shadow-lg flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 animate-pulse">
+            <div className="flex items-center gap-3">
+              <div className="w-10 h-10 rounded-xl bg-rose-600 text-white flex items-center justify-center shrink-0 shadow-md">
+                <AlertTriangle className="w-6 h-6 animate-bounce" />
+              </div>
+              <div className="flex flex-col">
+                <b className="text-rose-950 text-sm sm:text-base font-black flex items-center gap-1.5">
+                  🚨 CRITICAL GEOFENCE BREACH ALERT ({geofenceBreaches.length} {geofenceBreaches.length === 1 ? 'Pond Machine' : 'Pond Machines'})
+                </b>
+                <span className="text-rose-900 text-xs font-semibold">
+                  {geofenceBreaches.map(b => {
+                    const raw = b.rawTelemetry;
+                    const d = (raw?.moveDistanceKm ?? (raw?.calibratedLatitude && raw?.latitude ? calculateHaversineKm(raw.calibratedLatitude, raw.calibratedLongitude || 0, raw.latitude, raw.longitude || 0) : 0));
+                    return `${b.id} (${b.pond}) moved ${d.toFixed(2)} km`;
+                  }).join(', ')} — Exceeds 1.0 km pond safety radius!
+                </span>
+              </div>
+            </div>
+            <div className="flex items-center gap-2 w-full sm:w-auto shrink-0">
+              <button
+                type="button"
+                onClick={() => {
+                  setSelectedDevice(geofenceBreaches[0]);
+                  setRoute('devices');
+                }}
+                className="w-full sm:w-auto px-3.5 py-2 rounded-xl bg-rose-600 hover:bg-rose-700 active:scale-95 text-white font-bold text-xs shadow-md transition-all cursor-pointer flex items-center justify-center gap-1.5"
+              >
+                <MapPin className="w-3.5 h-3.5" />
+                <span>Inspect Pond Location</span>
+              </button>
+            </div>
+          </div>
+        )}
+
         {/* ── TAB 1: INTERACTIVE MAP VIEW ── */}
         {route === 'map' && (
           <div className="p-3 sm:p-5 flex flex-col gap-3.5 animate-in fade-in">
@@ -1068,198 +1329,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
             <div className="grid grid-cols-1 lg:grid-cols-12 gap-4">
               {/* Left Column: Interactive Vector SVG Map Canvas (7 or 8 cols on desktop) */}
               <div className="lg:col-span-7 xl:col-span-8 flex flex-col gap-3">
-                <div className="relative w-full aspect-square sm:aspect-4/3 rounded-2xl overflow-hidden bg-[#0A2236] border border-[#2A5584] shadow-inner select-none">
-                  {/* Vector SVG India Map with States */}
-                  <svg
-                    viewBox={mapBox.map((v) => v.toFixed(2)).join(' ')}
-                    preserveAspectRatio="none"
-                    className="absolute inset-0 w-full h-full"
-                  >
-                    <path
-                      d={OXY_MAP_DATA.outline}
-                      fill="#163A55"
-                      stroke="#54B7E7"
-                      strokeWidth="1.2"
-                      vectorEffect="non-scaling-stroke"
-                    />
-                    {Object.entries(OXY_MAP_DATA.states).map(([sName, sPath]) => {
-                      const isSel = sName === mapState;
-                      return (
-                        <path
-                          key={sName}
-                          d={sPath}
-                          fill={isSel ? '#1E5276' : 'none'}
-                          stroke={isSel ? '#7FD4F5' : '#3B7EA6'}
-                          strokeWidth={isSel ? 1.6 : 0.6}
-                          vectorEffect="non-scaling-stroke"
-                          className="transition-colors"
-                        />
-                      );
-                    })}
-                  </svg>
-
-                  {/* Breadcrumb Navigation Trail */}
-                  <div className="absolute left-2.5 top-2.5 z-20 flex flex-wrap items-center gap-1 px-3 py-1.5 rounded-xl bg-[#0B2440]/90 backdrop-blur-md text-xs border border-sky-400/20 shadow-md">
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setMapState('All');
-                        setMapDist('All');
-                        setMapSelectedDeviceId(null);
-                      }}
-                      className="text-[#8FC7E2] hover:text-white font-semibold cursor-pointer"
-                    >
-                      India
-                    </button>
-                    {mapState !== 'All' && (
-                      <>
-                        <span className="text-[#5B7479]">›</span>
-                        <button
-                          type="button"
-                          onClick={() => {
-                            setMapDist('All');
-                            setMapSelectedDeviceId(null);
-                          }}
-                          className={`${
-                            mapDist === 'All' ? 'text-white font-bold' : 'text-[#8FC7E2]'
-                          } cursor-pointer`}
-                        >
-                          {mapState}
-                        </button>
-                      </>
-                    )}
-                    {mapDist !== 'All' && (
-                      <>
-                        <span className="text-[#5B7479]">›</span>
-                        <span className="text-white font-bold">{mapDist}</span>
-                      </>
-                    )}
-                  </div>
-
-                  {/* Zoom Controls */}
-                  <div className="absolute right-2.5 top-2.5 z-20 flex flex-col gap-1.5">
-                    <button
-                      type="button"
-                      onClick={handleMapZoomIn}
-                      className="w-10 h-10 rounded-xl bg-white/95 hover:bg-white text-[#0B2440] font-bold text-xl flex items-center justify-center shadow-lg transition-transform active:scale-95 cursor-pointer"
-                      title="Zoom In"
-                    >
-                      +
-                    </button>
-                    <button
-                      type="button"
-                      onClick={handleMapZoomOut}
-                      className="w-10 h-10 rounded-xl bg-white/95 hover:bg-white text-[#0B2440] font-bold text-xl flex items-center justify-center shadow-lg transition-transform active:scale-95 cursor-pointer"
-                      title="Zoom Out"
-                    >
-                      −
-                    </button>
-                  </div>
-
-                  {/* Dynamic Markers: State/District Donut Clusters OR Individual Machine Pins */}
-                  {mapLevel !== 'district' ? (
-                    // Country or State cluster view with conic gradient donuts
-                    (() => {
-                      const groupKey = mapLevel === 'country' ? 'state' : 'district';
-                      const groups: Record<string, AdminDeviceRecord[]> = {};
-                      mapShown.forEach((d) => {
-                        const k = d[groupKey as keyof AdminDeviceRecord] as string;
-                        if (!groups[k]) groups[k] = [];
-                        groups[k].push(d);
-                      });
-
-                      return Object.entries(groups).map(([gName, ds]) => {
-                        const n = ds.length;
-                        const cc = countBy(ds);
-                        const lat = ds.reduce((acc, d) => acc + d.lat, 0) / n;
-                        const lon = ds.reduce((acc, d) => acc + d.lon, 0) / n;
-                        const a = (cc.running / n) * 100;
-                        const b = a + (cc.standby / n) * 100;
-                        const m = b + (cc.maint / n) * 100;
-                        const size = Math.round(36 + Math.sqrt(n) * 4);
-                        const pos = pct(P(lat, lon));
-
-                        return (
-                          <div
-                            key={gName}
-                            className="absolute -translate-x-1/2 -translate-y-1/2 flex flex-col items-center gap-1 z-10"
-                            style={pos}
-                          >
-                            <button
-                              type="button"
-                              onClick={() => {
-                                if (mapState === 'All') setMapState(gName);
-                                else setMapDist(gName);
-                                setMapSelectedDeviceId(null);
-                              }}
-                              className="relative p-[3px] rounded-full border-0 cursor-pointer shadow-xl transition-transform hover:scale-110 active:scale-95"
-                              style={{
-                                width: `${size}px`,
-                                height: `${size}px`,
-                                background: `conic-gradient(#22C55E 0 ${a}%, #94A3B8 ${a}% ${b}%, #FACC15 ${b}% ${m}%, #EF4444 ${m}% 100%)`,
-                              }}
-                              title={`${gName}: ${n} aerators (${cc.running} running, ${cc.critical} critical)`}
-                            >
-                              <span className="w-full h-full rounded-full bg-[#0B2440] text-white flex items-center justify-center font-mono font-bold text-xs sm:text-sm">
-                                {n}
-                              </span>
-                              {cc.running > 0 && (
-                                <span className="absolute -top-0.5 -right-0.5 w-2.5 h-2.5 rounded-full bg-emerald-400 border border-[#0A2236] ox-blink" />
-                              )}
-                            </button>
-                            <span className="px-1.5 py-0.5 rounded-md bg-[#0B2440]/90 text-[#E7F2F8] text-[10px] font-bold whitespace-nowrap shadow-xs">
-                              {gName}
-                            </span>
-                          </div>
-                        );
-                      });
-                    })()
-                  ) : (
-                    // District level: individual pinpoint markers
-                    mapShown.map((d) => {
-                      const mm = META[d.status];
-                      const isSel = mapSelectedDeviceId === d.id;
-                      const size = isSel ? 20 : 15;
-                      const isRunning = d.status === 'running';
-                      const pos = pct(P(d.lat, d.lon));
-
-                      return (
-                        <div
-                          key={d.id}
-                          className="absolute -translate-x-[11px] -translate-y-[11px] flex items-center gap-1 z-10"
-                          style={pos}
-                        >
-                          <span className="relative w-[22px] height-[22px] shrink-0">
-                            {isRunning && <span className="ox-halo" />}
-                            <button
-                              type="button"
-                              onClick={() => setMapSelectedDeviceId(d.id)}
-                              className={`absolute rounded-full cursor-pointer transition-transform ${
-                                isRunning ? 'ox-blink' : ''
-                              }`}
-                              style={{
-                                left: `${11 - size / 2}px`,
-                                top: `${11 - size / 2}px`,
-                                width: `${size}px`,
-                                height: `${size}px`,
-                                background: mm.color,
-                                border: isSel ? '3px solid #ffffff' : '2px solid #0A2236',
-                              }}
-                              title={`${d.id} (${d.pond}): ${mm.label}`}
-                            />
-                          </span>
-                          <span
-                            className={`px-1.5 py-0.5 rounded-md text-[10px] font-bold whitespace-nowrap shadow-xs ${
-                              isSel ? 'bg-white text-[#0B2440]' : 'bg-[#0B2440]/90 text-white'
-                            }`}
-                          >
-                            {d.pond}
-                          </span>
-                        </div>
-                      );
-                    })
-                  )}
-                </div>
+                <FleetMap items={mapShown} selected={mapSelectedDeviceId} onSelect={(id) => setMapSelectedDeviceId(id)} />
 
                 {/* Map Legend Indicators */}
                 <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 text-xs text-[#33475A] bg-white p-3 rounded-2xl border border-[#DDE7EF] shadow-xs">
@@ -1428,6 +1498,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                   <span className="text-[11px] text-[#52677A]">
                     Includes GPS coordinates, farmer details, run hours, DO levels, and warranty status.
                   </span>
+                  <DataDownload fleet={fleet} />
                 </div>
 
                 {/* Sub-tabs: Location Breakdown vs Device List */}
@@ -1708,6 +1779,8 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                     </div>
                   )}
                 </div>
+
+                <DataDownload key={selectedDevice.id} fleet={fleet} deviceId={selectedDevice.id} title="Download this pond's data" />
 
                 {/* Sub-Tabs: Overview, Sensors, Service, Warranty, Activity (Wrapped on mobile so all 5 options are visible) */}
                 <div
@@ -2011,6 +2084,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                               : 'flex flex-wrap items-center justify-between gap-3'
                           }`}
                         >
+                          {isSensorInstalled(raw, 'do') && (
                           <div className="flex flex-col min-w-0">
                             <span className="text-[11px] text-[#9DB8D0]">Dissolved Oxygen (DO)</span>
                             <b className="text-emerald-400 font-mono text-sm truncate">
@@ -2026,13 +2100,16 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                               )}
                             </b>
                           </div>
+                          )}
 
+                          {isSensorInstalled(raw, 'temp') && (
                           <div className="flex flex-col min-w-0">
                             <span className="text-[11px] text-[#9DB8D0]">Water Temp</span>
                             <b className="text-sky-300 font-mono text-sm">
-                              {raw?.waterTemp ? `${raw.waterTemp.toFixed(1)} °C` : '28.4 °C'}
+                              {typeof raw?.waterTemp === 'number' ? `${raw.waterTemp.toFixed(1)} °C` : 'No reading'}
                             </b>
                           </div>
+                          )}
 
                           <div className="flex flex-col min-w-0">
                             <span className="text-[11px] text-[#9DB8D0]">Control Mode</span>
@@ -2073,6 +2150,253 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                         </div>
                       </div>
 
+                      {/* ── CARD: SIMCom A7672S 4G LTE POND LOCATION & 1.0 KM GEOFENCE ANCHOR ── */}
+                      {(() => {
+                        const calLat = raw?.calibratedLatitude;
+                        const calLng = raw?.calibratedLongitude;
+                        const liveLat = raw?.latitude;
+                        const liveLng = raw?.longitude;
+                        const isCalibrated = Boolean(raw?.isCalibrated && calLat && calLng && Math.abs(calLat) > 0.01);
+                        const csqVal = raw?.csq ?? raw?.gprsSignal ?? 0;
+                        const signalPercent = Math.min(100, Math.round((csqVal / 31) * 100));
+                        
+                        let currentDistanceKm = raw?.moveDistanceKm ?? 0;
+                        if (isCalibrated && liveLat && liveLng && Math.abs(liveLat) > 0.01) {
+                          currentDistanceKm = calculateHaversineKm(calLat!, calLng!, liveLat, liveLng);
+                        }
+                        const isBreached = isCalibrated && (currentDistanceKm > 1.0 || raw?.isGeofenceBreached);
+
+                        return (
+                          <div className={`p-4 sm:p-5 rounded-2xl border shadow-sm flex flex-col gap-3.5 transition-all ${
+                            isBreached
+                              ? 'bg-gradient-to-br from-rose-50 via-white to-rose-50 border-rose-500 shadow-rose-100 ring-2 ring-rose-400'
+                              : isCalibrated
+                              ? 'bg-gradient-to-br from-sky-50/50 via-white to-emerald-50/30 border-[#DDE7EF]'
+                              : 'bg-white border-[#DDE7EF]'
+                          }`}>
+                            {/* Card Top Header */}
+                            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2.5 border-b border-slate-100 pb-3">
+                              <div className="flex items-center gap-2.5">
+                                <div className={`w-9 h-9 rounded-xl flex items-center justify-center shrink-0 ${
+                                  isBreached
+                                    ? 'bg-rose-600 text-white shadow-md animate-bounce'
+                                    : isCalibrated
+                                    ? 'bg-[#0E6FA3] text-white shadow-xs'
+                                    : 'bg-slate-200 text-[#52677A]'
+                                }`}>
+                                  <Radio className="w-5 h-5" />
+                                </div>
+                                <div className="flex flex-col">
+                                  <div className="flex items-center gap-2">
+                                    <h3 className="text-sm sm:text-base font-bold text-[#0B2440]">
+                                      Pond Location &amp; 1.0 km Geofence
+                                    </h3>
+                                    <span className="px-2 py-0.5 rounded-full text-[10px] font-black tracking-wider uppercase bg-[#E3F3FB] text-[#0A4F75] border border-[#BFE2F3]">
+                                      SIMCom A7672S 4G LTE
+                                    </span>
+                                  </div>
+                                  <span className="text-xs text-[#52677A]">
+                                    Pond ID: <b className="font-mono text-[#0B2440]">{selectedDevice.id}</b> · {selectedDevice.pond}
+                                  </span>
+                                </div>
+                              </div>
+
+                              {/* Geofence Status Badge */}
+                              <div className="flex items-center gap-2 self-start sm:self-auto">
+                                <span className={`px-3 py-1 rounded-full text-xs font-bold flex items-center gap-1.5 border ${
+                                  isBreached
+                                    ? 'bg-rose-100 text-rose-800 border-rose-400 animate-pulse'
+                                    : isCalibrated
+                                    ? 'bg-emerald-100 text-emerald-800 border-emerald-300'
+                                    : 'bg-amber-100 text-amber-800 border-amber-300'
+                                }`}>
+                                  {isBreached ? (
+                                    <>
+                                      <AlertTriangle className="w-3.5 h-3.5 text-rose-600" />
+                                      <span>🚨 BREACHED ({currentDistanceKm.toFixed(2)} km &gt; 1.0 km)</span>
+                                    </>
+                                  ) : isCalibrated ? (
+                                    <>
+                                      <Lock className="w-3.5 h-3.5 text-emerald-700" />
+                                      <span>🔒 Anchor Locked (Within 1.0 km Radius)</span>
+                                    </>
+                                  ) : (
+                                    <>
+                                      <Unlock className="w-3.5 h-3.5 text-amber-700" />
+                                      <span>⚠️ Not Calibrated (Unanchored)</span>
+                                    </>
+                                  )}
+                                </span>
+                              </div>
+                            </div>
+
+                            {/* 4-Item Telemetry & Geofence Metric Grid */}
+                            <div className="grid grid-cols-2 lg:grid-cols-4 gap-2.5 sm:gap-3">
+                              {/* 1: 4G LTE Signal & Network */}
+                              <div className="bg-[#F8FAFC] border border-[#E2E8F0] p-3 rounded-xl flex flex-col justify-between gap-1">
+                                <span className="text-[11px] font-semibold text-[#64748B] flex items-center gap-1">
+                                  <Radio className="w-3.5 h-3.5 text-sky-600" />
+                                  <span>4G LTE Signal</span>
+                                </span>
+                                <div className="flex items-baseline gap-1.5">
+                                  <b className="font-mono text-base font-black text-[#0F172A]">
+                                    CSQ {csqVal}/31
+                                  </b>
+                                  <span className="text-xs font-bold text-sky-600">
+                                    ({signalPercent}%)
+                                  </span>
+                                </div>
+                                <span className="text-[10px] text-[#64748B] truncate">
+                                  {raw?.networkType || '4G LTE Cat-1'} · {raw?.modemModel || 'SIMCom A7672S'}
+                                </span>
+                              </div>
+
+                              {/* 2: Live GNSS / GPS Position */}
+                              <div className="bg-[#F8FAFC] border border-[#E2E8F0] p-3 rounded-xl flex flex-col justify-between gap-1">
+                                <span className="text-[11px] font-semibold text-[#64748B] flex items-center gap-1">
+                                  <Compass className="w-3.5 h-3.5 text-emerald-600" />
+                                  <span>Live GNSS / GPS</span>
+                                </span>
+                                <b className="font-mono text-xs sm:text-sm font-bold text-[#0F172A] truncate" title={liveLat && liveLng ? `${liveLat.toFixed(6)}, ${liveLng.toFixed(6)}` : 'Searching...'}>
+                                  {liveLat && liveLng && Math.abs(liveLat) > 0.01
+                                    ? `${liveLat.toFixed(5)}, ${liveLng.toFixed(5)}`
+                                    : 'Acquiring GPS fix...'}
+                                </b>
+                                <span className="text-[10px] text-[#64748B] truncate">
+                                  {raw?.gpsFix ? '3D GPS Fixed' : 'Cell Tower LBS'} · {raw?.satellites !== undefined ? `${raw.satellites} Sats` : 'Fix Ready'}
+                                </span>
+                              </div>
+
+                              {/* 3: Calibrated Pond Anchor */}
+                              <div className="bg-[#F8FAFC] border border-[#E2E8F0] p-3 rounded-xl flex flex-col justify-between gap-1">
+                                <span className="text-[11px] font-semibold text-[#64748B] flex items-center gap-1">
+                                  <MapPin className="w-3.5 h-3.5 text-blue-600" />
+                                  <span>Locked Pond Anchor</span>
+                                </span>
+                                <b className="font-mono text-xs sm:text-sm font-bold text-[#0F172A] truncate" title={calLat && calLng ? `${calLat.toFixed(6)}, ${calLng.toFixed(6)}` : 'No Anchor Set'}>
+                                  {isCalibrated
+                                    ? `${calLat!.toFixed(5)}, ${calLng!.toFixed(5)}`
+                                    : 'No Anchor Set'}
+                                </b>
+                                <span className="text-[10px] text-[#64748B] truncate">
+                                  {raw?.calibratedLocationName || 'Pond Anchor Location'}
+                                </span>
+                              </div>
+
+                              {/* 4: Displacement vs 1.0 km Safety Radius */}
+                              <div className={`border p-3 rounded-xl flex flex-col justify-between gap-1 ${
+                                isBreached
+                                  ? 'bg-rose-50 border-rose-300 text-rose-900'
+                                  : 'bg-[#F8FAFC] border-[#E2E8F0]'
+                              }`}>
+                                <span className="text-[11px] font-semibold flex items-center gap-1">
+                                  <AlertTriangle className={`w-3.5 h-3.5 ${isBreached ? 'text-rose-600' : 'text-amber-500'}`} />
+                                  <span>Displacement / Radius</span>
+                                </span>
+                                <div className="flex items-baseline gap-1.5">
+                                  <b className={`font-mono text-base font-black ${isBreached ? 'text-rose-700' : 'text-[#0F172A]'}`}>
+                                    {isCalibrated ? `${currentDistanceKm.toFixed(3)} km` : '0.000 km'}
+                                  </b>
+                                  <span className="text-xs text-[#64748B]">/ 1.0 km</span>
+                                </div>
+                                <span className={`text-[10px] font-bold truncate ${isBreached ? 'text-rose-700' : 'text-emerald-700'}`}>
+                                  {isBreached ? '🚨 EXCEEDED 1.0 KM RADIUS' : isCalibrated ? '✓ Inside 1.0 km perimeter' : 'Awaiting calibration'}
+                                </span>
+                              </div>
+                            </div>
+
+                            {/* Action Buttons: Detect / Calibrate / Search / Reset */}
+                            <div className="flex flex-wrap items-center gap-2 pt-1 border-t border-slate-100">
+                              {/* 1: Detect from A7672S GPS */}
+                              <button
+                                type="button"
+                                onClick={() => handleDetectFromDeviceGps(selectedDevice)}
+                                disabled={calibratingDeviceId === selectedDevice.id}
+                                className="px-3 py-2 bg-[#0E6FA3] hover:bg-[#0b5982] active:scale-95 text-white font-bold text-xs rounded-xl flex items-center gap-1.5 transition-all cursor-pointer shadow-xs"
+                                title="Lock coordinates directly from SIMCom A7672S live GPS fix"
+                              >
+                                <LocateFixed className="w-3.5 h-3.5" />
+                                <span>🛰️ Detect from A7672S GPS</span>
+                              </button>
+
+                              {/* 2: Detect from Phone GPS */}
+                              <button
+                                type="button"
+                                onClick={() => handleDetectFromPhoneGps(selectedDevice.id)}
+                                disabled={calibratingDeviceId === selectedDevice.id}
+                                className="px-3 py-2 bg-emerald-600 hover:bg-emerald-700 active:scale-95 text-white font-bold text-xs rounded-xl flex items-center gap-1.5 transition-all cursor-pointer shadow-xs"
+                                title="Calibrate and lock exact pond coordinates using current phone / browser GPS"
+                              >
+                                <Smartphone className={`w-3.5 h-3.5 ${calibratingDeviceId === selectedDevice.id ? 'animate-spin' : ''}`} />
+                                <span>{calibratingDeviceId === selectedDevice.id ? 'Locating...' : '📱 Detect from Phone GPS'}</span>
+                              </button>
+
+                              {/* 3: Search / Input Coordinates */}
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setManualCalibrateModal({
+                                    open: true,
+                                    deviceId: selectedDevice.id,
+                                    pondName: selectedDevice.pond,
+                                    lat: String(calLat || liveLat || 16.711395),
+                                    lng: String(calLng || liveLng || 81.464035),
+                                    name: raw?.calibratedLocationName || `${selectedDevice.pond} Anchor`,
+                                  });
+                                }}
+                                className="px-3 py-2 bg-white border border-[#C9D6DE] hover:bg-slate-50 active:scale-95 text-[#0F2233] font-bold text-xs rounded-xl flex items-center gap-1.5 transition-all cursor-pointer shadow-xs"
+                                title="Manually search or enter pond coordinates"
+                              >
+                                <Search className="w-3.5 h-3.5 text-[#52677A]" />
+                                <span>🔍 Search / Input Coordinates</span>
+                              </button>
+
+                              {/* 4: Reset Anchor */}
+                              {isCalibrated && (
+                                <button
+                                  type="button"
+                                  onClick={() => handleResetPondCalibration(selectedDevice.id)}
+                                  className="px-3 py-2 bg-rose-50 border border-rose-200 hover:bg-rose-100 text-rose-700 font-bold text-xs rounded-xl flex items-center gap-1.5 transition-all cursor-pointer"
+                                  title="Clear pond anchor and reset calibration"
+                                >
+                                  <Unlock className="w-3.5 h-3.5" />
+                                  <span>Reset Anchor</span>
+                                </button>
+                              )}
+
+                              {/* Toggle Map View */}
+                              <button
+                                type="button"
+                                onClick={() => setShowLiveMapInDetail((prev) => !prev)}
+                                className={`px-3 py-2 font-bold text-xs rounded-xl flex items-center gap-1.5 transition-all cursor-pointer border ${
+                                  showLiveMapInDetail
+                                    ? 'bg-[#0B2440] text-white border-[#0B2440]'
+                                    : 'bg-slate-100 text-[#33475A] border-slate-200 hover:bg-slate-200'
+                                }`}
+                              >
+                                <Compass className="w-3.5 h-3.5" />
+                                <span>{showLiveMapInDetail ? 'Hide Map' : '🗺️ View 1.0 km Geofence Map'}</span>
+                              </button>
+                            </div>
+
+                            {/* Embedded Live GPRS Map with 1.0 km Radius Circle */}
+                            {showLiveMapInDetail && (
+                              <div className="mt-2 rounded-2xl overflow-hidden border border-[#DDE7EF] shadow-inner animate-in fade-in">
+                                <LiveGprsMap
+                                  device={raw || currentDevice}
+                                  onCalibrateLocation={async (lat, lng, locName) => {
+                                    await handleCalibratePondLocation(selectedDevice.id, lat, lng, locName);
+                                  }}
+                                  onResetCalibration={async () => {
+                                    await handleResetPondCalibration(selectedDevice.id);
+                                  }}
+                                />
+                              </div>
+                            )}
+                          </div>
+                        );
+                      })()}
+
                       {/* 2-Column Grid: Machine Specs + Warranty & Active Sensors */}
                       <div className="grid grid-cols-1 md:grid-cols-2 gap-3.5">
                         <div className="bg-white p-4 rounded-2xl border border-[#DDE7EF] shadow-xs flex flex-col gap-2">
@@ -2095,8 +2419,10 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                             ],
                             ['Firmware Version', raw?.firmwareVersion || selectedDevice.fw],
                             ['Assigned Technician', selectedDevice.tech],
-                            ['Farmer Phone', selectedDevice.phone],
-                            ['Farmer Email', raw?.ownerEmail || 'farmer@oxynity.com'],
+                            ['Farmer Phone', selectedDevice.phone || 'Not recorded'],
+                            ['Farmer Email', raw?.ownerEmail || 'Not recorded'],
+                            ['Motor load', motorKwOf(raw) ? `${motorKwOf(raw).toFixed(2)} kW` : 'Not set'],
+                            ['Power tariff', raw?.specs?.tariffPerKwh ? `₹${raw.specs.tariffPerKwh} / unit` : 'Not set'],
                           ].map(([lbl, val]) => (
                             <div
                               key={lbl}
@@ -2106,6 +2432,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                               <b className="text-[#0F2233] text-right font-mono">{val}</b>
                             </div>
                           ))}
+                          <MachineSpecsEditor device={raw} deviceId={selectedDevice.id} />
                         </div>
 
                         <div className="flex flex-col gap-3.5">
@@ -2154,27 +2481,23 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                               {[
                                 {
                                   name: 'Dissolved Oxygen (DO)',
-                                  on:
-                                    raw?.doSensorEnabled !== false &&
-                                    (raw?.doLevel !== undefined
-                                      ? raw.doLevel >= 0
-                                      : selectedDevice.hasDO),
+                                  on: isSensorInstalled(raw, 'do'),
                                 },
                                 {
                                   name: 'Water Temperature',
-                                  on: Boolean(raw?.waterTemp || selectedDevice.hasTemp),
+                                  on: isSensorInstalled(raw, 'temp'),
                                 },
                                 {
                                   name: 'pH Sensor',
-                                  on: Boolean(raw?.phLevel && raw.phLevel > 0),
+                                  on: isSensorInstalled(raw, 'ph'),
                                 },
                                 {
                                   name: 'ORP Sensor',
-                                  on: Boolean(raw?.orpLevel && raw.orpLevel > 0),
+                                  on: isSensorInstalled(raw, 'orp'),
                                 },
                                 {
                                   name: 'Salinity Sensor',
-                                  on: Boolean(raw?.salinity && raw.salinity > 0),
+                                  on: isSensorInstalled(raw, 'sal'),
                                 },
                               ].map((s) => (
                                 <span
@@ -2198,15 +2521,16 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
 
                 {/* TAB CONTENT: Sensors */}
                 {deviceDetailTab === 'sensors' && (
+                  <>
+                  <InstalledSensorsEditor device={selectedDevice.rawTelemetry} deviceId={selectedDevice.id} />
+                  <button type="button" onClick={() => setSensorSetupFor(selectedDevice.id)} className="ox-btn ox-btn-primary ox-btn-block mb-3.5">
+                    Calibrate DO probe &amp; set pond location
+                  </button>
                   <div className="grid grid-cols-1 md:grid-cols-2 gap-3.5">
                     {[
                       {
                         name: 'Dissolved Oxygen (DO)',
-                        on:
-                          selectedDevice.rawTelemetry?.doSensorEnabled !== false &&
-                          (selectedDevice.rawTelemetry?.doLevel !== undefined
-                            ? selectedDevice.rawTelemetry.doLevel >= 0
-                            : selectedDevice.hasDO),
+                        on: isSensorInstalled(selectedDevice.rawTelemetry, 'do'),
                         serial: `DO-5200-${selectedDevice.id}`,
                         cal: selectedDevice.rawTelemetry?.isDoCalibrated
                           ? 'Calibrated (Multi-point)'
@@ -2225,7 +2549,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                       },
                       {
                         name: 'Water Temperature',
-                        on: Boolean(selectedDevice.rawTelemetry?.waterTemp || selectedDevice.hasTemp),
+                        on: isSensorInstalled(selectedDevice.rawTelemetry, 'temp'),
                         serial: `TMP-810-${selectedDevice.id}`,
                         cal: 'Factory Calibrated',
                         reading: selectedDevice.rawTelemetry?.waterTemp
@@ -2235,10 +2559,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                       },
                       {
                         name: 'pH Sensor',
-                        on: Boolean(
-                          selectedDevice.rawTelemetry?.phLevel &&
-                            selectedDevice.rawTelemetry.phLevel > 0
-                        ),
+                        on: isSensorInstalled(selectedDevice.rawTelemetry, 'ph'),
                         serial:
                           selectedDevice.rawTelemetry?.phLevel &&
                           selectedDevice.rawTelemetry.phLevel > 0
@@ -2262,10 +2583,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                       },
                       {
                         name: 'ORP Sensor',
-                        on: Boolean(
-                          selectedDevice.rawTelemetry?.orpLevel &&
-                            selectedDevice.rawTelemetry.orpLevel > 0
-                        ),
+                        on: isSensorInstalled(selectedDevice.rawTelemetry, 'orp'),
                         serial:
                           selectedDevice.rawTelemetry?.orpLevel &&
                           selectedDevice.rawTelemetry.orpLevel > 0
@@ -2324,6 +2642,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                       </div>
                     ))}
                   </div>
+                  </>
                 )}
 
                 {/* TAB CONTENT: Service History */}
@@ -2443,7 +2762,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                                 })
                               : 'earlier'
                           }`
-                        : `Last telemetry sync verified from SIM900A GPRS`,
+                        : `Last telemetry sync verified from SIMCom A7672S 4G LTE`,
                       color: '#0E6FA3',
                     },
                     {
@@ -2494,6 +2813,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
             ) : (
               // Fleet Listing View
               <div className="flex flex-col gap-3.5">
+                <DataDownload fleet={fleet} title="Download data (pumps, sensors, GPS)" />
                 {/* Search & Grouping Controls */}
                 <div
                   className={`flex ${
@@ -3309,6 +3629,22 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
               </button>
             </div>
 
+            {/* Installation: sensors, DO calibration, pond location, machine specs */}
+            <button
+              type="button"
+              onClick={() => setSensorSetupFor('')}
+              className="ox-card p-4 flex items-center gap-3 text-left cursor-pointer hover:border-[#0E6FA3] transition-colors"
+            >
+              <span className="w-11 h-11 rounded-2xl bg-[#E3F3FB] text-[#0E6FA3] flex items-center justify-center shrink-0">
+                <SlidersHorizontal className="w-5 h-5" />
+              </span>
+              <span className="flex-1 min-w-0">
+                <b className="block text-sm text-[#0B2440]">Sensor setup &amp; calibration</b>
+                <span className="block text-xs text-[#52677A]">Install sensors, calibrate DO probe, save pond location and machine specs</span>
+              </span>
+              <span className="ox-btn ox-btn-primary ox-btn-sm">Open</span>
+            </button>
+
             {/* Desktop 2-Column: Reports on Left, Automation Rules & Info on Right */}
             <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
               {/* Reports Download Hub */}
@@ -3507,13 +3843,13 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
 
             {/* Modal Content */}
             <div className="flex-1 overflow-y-auto p-4">
-              {systemToolsTab === 'users' && <AdminUserManagement />}
-              {systemToolsTab === 'content' && <AdminContentManagement />}
-              {systemToolsTab === 'notifications' && <AdminNotificationsHub />}
+              {systemToolsTab === 'users' && <AdminUserManagement initialUsers={[]} allPonds={allDevices || []} />}
+              {systemToolsTab === 'content' && <AdminContentManagement initialAnnouncements={[]} initialGuides={[]} allPonds={allDevices || []} />}
+              {systemToolsTab === 'notifications' && <AdminNotificationsHub initialDispatches={[]} allUsers={savedAdminUsers()} allPonds={allDevices || []} />}
               {systemToolsTab === 'calibrate' && (
                 <div className="flex flex-col gap-3">
                   <span className="text-xs text-[#52677A]">
-                    Calibrate and lock real coordinates for SIM900A GPRS Cell LBS stations.
+                    Calibrate and lock real coordinates for SIMCom A7672S 4G LTE Cat-1 stations (1.0 km radius geofence lock).
                   </span>
                   <LiveGprsMap
                     device={currentDevice}
@@ -3522,6 +3858,139 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                   />
                 </div>
               )}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ── MODAL: SEARCH / INPUT POND COORDINATES & CALIBRATE ── */}
+      {manualCalibrateModal && manualCalibrateModal.open && (
+        <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-xs flex items-center justify-center p-3 sm:p-6 animate-in fade-in">
+          <div className="bg-white rounded-3xl w-full max-w-lg overflow-hidden shadow-2xl border border-slate-200 flex flex-col">
+            <div className="bg-[#0B2440] text-white p-4 flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <MapPin className="w-5 h-5 text-sky-400" />
+                <b className="text-base">Calibrate Pond Anchor ({manualCalibrateModal.deviceId})</b>
+              </div>
+              <button
+                type="button"
+                onClick={() => setManualCalibrateModal(null)}
+                className="text-[#9DB8D0] hover:text-white cursor-pointer"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            <div className="p-4 sm:p-6 flex flex-col gap-4 text-xs">
+              <p className="text-[#52677A]">
+                Calibrate and lock the reference center coordinates for <b>{manualCalibrateModal.pondName}</b> ({manualCalibrateModal.deviceId}). Oxynity will maintain a <b>1.0 km geofence safety perimeter</b> around this anchor.
+              </p>
+
+              <div className="flex flex-col gap-1.5">
+                <label className="font-bold text-[#0F2233]">Pond Anchor Name / Label</label>
+                <input
+                  type="text"
+                  value={manualCalibrateModal.name}
+                  onChange={(e) =>
+                    setManualCalibrateModal({ ...manualCalibrateModal, name: e.target.value })
+                  }
+                  placeholder="e.g. Raju South Pond #1"
+                  className="h-10 px-3 rounded-xl border border-[#C9D6DE] bg-white font-medium text-xs text-[#0F2233]"
+                />
+              </div>
+
+              <div className="grid grid-cols-2 gap-3">
+                <div className="flex flex-col gap-1.5">
+                  <label className="font-bold text-[#0F2233]">Latitude (°N)</label>
+                  <input
+                    type="number"
+                    step="0.000001"
+                    value={manualCalibrateModal.lat}
+                    onChange={(e) =>
+                      setManualCalibrateModal({ ...manualCalibrateModal, lat: e.target.value })
+                    }
+                    placeholder="16.711395"
+                    className="h-10 px-3 rounded-xl border border-[#C9D6DE] bg-white font-mono text-xs text-[#0F2233]"
+                  />
+                </div>
+                <div className="flex flex-col gap-1.5">
+                  <label className="font-bold text-[#0F2233]">Longitude (°E)</label>
+                  <input
+                    type="number"
+                    step="0.000001"
+                    value={manualCalibrateModal.lng}
+                    onChange={(e) =>
+                      setManualCalibrateModal({ ...manualCalibrateModal, lng: e.target.value })
+                    }
+                    placeholder="81.464035"
+                    className="h-10 px-3 rounded-xl border border-[#C9D6DE] bg-white font-mono text-xs text-[#0F2233]"
+                  />
+                </div>
+              </div>
+
+              {/* Quick Presets */}
+              <div className="flex flex-col gap-1.5">
+                <span className="font-bold text-[#52677A]">Quick Presets / Aquaculture Zones:</span>
+                <div className="flex flex-wrap gap-1.5">
+                  {[
+                    { label: 'Bhimavaram Delta', lat: '16.544892', lng: '81.521235' },
+                    { label: 'Kakinada Coast', lat: '16.989064', lng: '82.247562' },
+                    { label: 'Nellore Shrimp Farm', lat: '14.442600', lng: '79.986500' },
+                  ].map((p) => (
+                    <button
+                      key={p.label}
+                      type="button"
+                      onClick={() =>
+                        setManualCalibrateModal({
+                          ...manualCalibrateModal,
+                          lat: p.lat,
+                          lng: p.lng,
+                          name: `${manualCalibrateModal.pondName} (${p.label})`,
+                        })
+                      }
+                      className="px-2.5 py-1 rounded-lg bg-slate-100 hover:bg-slate-200 text-[#33475A] font-bold text-[11px] cursor-pointer"
+                    >
+                      {p.label}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              {/* Actions */}
+              <div className="flex items-center justify-end gap-2 pt-2 border-t border-slate-100 mt-2">
+                <button
+                  type="button"
+                  onClick={() => setManualCalibrateModal(null)}
+                  className="px-4 py-2 rounded-xl bg-slate-100 hover:bg-slate-200 text-[#33475A] font-bold cursor-pointer"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  onClick={async () => {
+                    const latNum = parseFloat(manualCalibrateModal.lat);
+                    const lngNum = parseFloat(manualCalibrateModal.lng);
+                    if (isNaN(latNum) || isNaN(lngNum)) {
+                      showToast('Please enter valid latitude and longitude numbers.');
+                      return;
+                    }
+                    const locName =
+                      manualCalibrateModal.name ||
+                      `Pond Anchor (${latNum.toFixed(4)}, ${lngNum.toFixed(4)})`;
+                    await handleCalibratePondLocation(
+                      manualCalibrateModal.deviceId,
+                      latNum,
+                      lngNum,
+                      locName
+                    );
+                    setManualCalibrateModal(null);
+                  }}
+                  className="px-5 py-2 rounded-xl bg-[#0E6FA3] hover:bg-[#0b5982] text-white font-bold cursor-pointer shadow-md flex items-center gap-1.5"
+                >
+                  <Lock className="w-3.5 h-3.5" />
+                  <span>Lock &amp; Calibrate 1.0 km Anchor</span>
+                </button>
+              </div>
             </div>
           </div>
         </div>

@@ -4,6 +4,8 @@ import { DeviceTelemetry, EnabledSensors, AeratorSchedule } from '../types/iot';
 import { PowerControl } from './PowerControl';
 import { AnimatedTankBanner } from './AnimatedTankBanner';
 import { AnimatedSensors } from './AnimatedSensors';
+import { WeatherCard } from './WeatherCard';
+import { canUseAutoDo } from '../lib/oxynity';
 
 interface PondDashboardProps {
   allDevices: DeviceTelemetry[];
@@ -20,6 +22,8 @@ interface PondDashboardProps {
   onDeletePond?: (pondId: string) => void;
   onEditPondName?: (pondId: string, newName: string) => void;
   onUpdateSchedules?: (schedules: AeratorSchedule[]) => void;
+  /** Home "Schedule" switch: turns the pond's schedules on/off (separate from Auto DO mode). */
+  onToggleSchedule?: (enabled: boolean) => void;
 }
 
 /** Calculate ESP32 heartbeat status & last seen age */
@@ -35,25 +39,23 @@ export function getEsp32HeartbeatStatus(device?: DeviceTelemetry): {
   const diffMs = Date.now() - new Date(tsStr).getTime();
   const diffSecs = Math.max(0, Math.floor(diffMs / 1000));
 
-  // 1. Healthy / Live: up to 45 seconds (Normal 2G GPRS cycle)
-  if (diffSecs <= 45) {
+  // 1. Machine remains Online for up to 5 minutes (300 seconds) after lastSeen
+  if (diffSecs <= 300) {
+    let text = 'Live (Just now)';
+    if (diffSecs > 30 && diffSecs < 60) {
+      text = `Live (${diffSecs}s ago)`;
+    } else if (diffSecs >= 60) {
+      const mins = Math.floor(diffSecs / 60);
+      text = `Live (${mins}m ago)`;
+    }
     return {
-      text: diffSecs <= 4 ? 'Live (Just now)' : `Live (${diffSecs}s ago)`,
+      text,
       isLive: true,
       secondsAgo: diffSecs,
     };
   }
 
-  // 2. Cellular Jitter / Syncing: 45 to 120 seconds (still Online / Active!)
-  if (diffSecs <= 120) {
-    return {
-      text: `Live (${diffSecs}s ago)`,
-      isLive: true,
-      secondsAgo: diffSecs,
-    };
-  }
-
-  // 3. Confirmed Offline: after 120 seconds without any heartbeat!
+  // 2. Confirmed Offline: strictly when no lastSeen was received for more than 5 minutes (300 seconds)
   const mins = Math.floor(diffSecs / 60);
   if (mins < 60) {
     return { text: `Offline (${mins}m ago)`, isLive: false, secondsAgo: diffSecs };
@@ -77,6 +79,7 @@ export const PondDashboard: React.FC<PondDashboardProps> = ({
   onDeletePond,
   onEditPondName,
   onUpdateSchedules,
+  onToggleSchedule,
 }) => {
   const [, setTick] = useState(0);
 
@@ -113,6 +116,8 @@ export const PondDashboard: React.FC<PondDashboardProps> = ({
     activeDevice ||
     allDevices[0];
   const heartbeat = getEsp32HeartbeatStatus(currentDevice);
+  // Schedules switch; older ponds without the field follow Auto mode like before
+  const schedOn = currentDevice.scheduleEnabled ?? currentDevice.autoMode;
   const liveOnline = isOnline !== undefined ? isOnline : heartbeat.isLive;
 
   return (
@@ -129,10 +134,11 @@ export const PondDashboard: React.FC<PondDashboardProps> = ({
         onCancelCooldown={onCancelCooldown}
         isUpdating={isUpdating}
         isOnline={liveOnline}
+        doInstalled={canUseAutoDo(currentDevice, sensorsEnabled)}
       />
 
       {/* 2b. Schedule ON / OFF Switch Toggle */}
-      <div className="bg-white dark:bg-[#12313A] rounded-[24px] p-4 border border-[#DDE8EA] dark:border-[#1F4650] shadow-xs flex items-center justify-between gap-3">
+      <div className="ox-card p-4 flex items-center justify-between gap-3">
         <div className="flex items-center gap-3">
           <div className="w-10 h-10 rounded-2xl bg-[#E6EFF1] dark:bg-[#08222A] text-[#0E7C86] dark:text-[#19C3D1] flex items-center justify-center shrink-0 border border-[#DDE8EA]/60 dark:border-[#1F4650]">
             <Clock className="w-5 h-5" />
@@ -144,18 +150,18 @@ export const PondDashboard: React.FC<PondDashboardProps> = ({
               </span>
               <span
                 className={`text-[10px] font-extrabold px-2 py-0.5 rounded-full ${
-                  currentDevice.autoMode
+                  schedOn
                     ? 'bg-emerald-100 dark:bg-emerald-950/80 text-emerald-800 dark:text-emerald-300 border border-emerald-300 dark:border-emerald-700'
                     : 'bg-slate-100 dark:bg-slate-800 text-slate-500 border border-slate-200 dark:border-slate-700'
                 }`}
               >
-                {currentDevice.autoMode ? 'ON' : 'OFF'}
+                {schedOn ? 'ON' : 'OFF'}
               </span>
             </div>
             <p className="text-xs text-[#5B7479] dark:text-[#9DB8BD] mt-0.5">
-              {currentDevice.autoMode
-                ? 'Auto mode ON · Schedules active'
-                : 'Auto mode OFF · Manual control'}
+              {schedOn
+                ? 'On · runs automatically'
+                : 'Off · manual control'}
             </p>
           </div>
         </div>
@@ -163,21 +169,11 @@ export const PondDashboard: React.FC<PondDashboardProps> = ({
         <button
           type="button"
           role="switch"
-          aria-checked={currentDevice.autoMode}
-          onClick={() => onToggleAutoMode(!currentDevice.autoMode)}
-          className={`w-13 h-7.5 rounded-full relative transition-colors cursor-pointer shrink-0 ${
-            currentDevice.autoMode
-              ? 'bg-[#0E7C86] dark:bg-[#19C3D1]'
-              : 'bg-[#DCE9EC] dark:bg-[#24444D]'
-          }`}
-          title={currentDevice.autoMode ? 'Turn Schedule / Auto mode OFF' : 'Turn Schedule / Auto mode ON'}
-        >
-          <span
-            className={`block w-6 h-6 rounded-full bg-white shadow-md absolute top-0.75 left-1 transition-transform ${
-              currentDevice.autoMode ? 'translate-x-5.5' : 'translate-x-0'
-            }`}
-          />
-        </button>
+          aria-checked={schedOn}
+          onClick={() => (onToggleSchedule || onToggleAutoMode)(!schedOn)}
+          className="ox-switch"
+          aria-label="Schedule on or off"
+        />
       </div>
 
       {/* 3. Animated Water Quality Sensors (Filtered by toggle switches) */}
@@ -186,6 +182,9 @@ export const PondDashboard: React.FC<PondDashboardProps> = ({
         isOnline={liveOnline}
         sensorsEnabled={sensorsEnabled}
       />
+
+      {/* 4. Weather at the pond (by GPS) with DO-related warnings */}
+      <WeatherCard device={currentDevice} />
     </div>
   );
 };

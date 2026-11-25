@@ -27,8 +27,8 @@ export interface DeviceTelemetry {
   locationName: string;
   gprsSignal: number; // CSQ 0-31 or %
   gprsConnected: boolean;
-  gprsLocationFixed?: boolean; // true when SIM900A acquires real cell LBS / GPS fix
-  locationSource?: string; // e.g. "SIM900A GPRS Cell LBS"
+  gprsLocationFixed?: boolean; // true when SIMCom A7672S acquires real cell LBS / GPS fix
+  locationSource?: string; // e.g. "SIMCom A7672S 4G LTE"
   calibratedLatitude?: number; // User's phone-calibrated pond latitude
   calibratedLongitude?: number; // User's phone-calibrated pond longitude
   calibratedLocationName?: string; // E.g. "Pond Live GPS Calibrated"
@@ -36,9 +36,17 @@ export interface DeviceTelemetry {
   calibratedCellLac?: string; // Serving cell tower LAC at time of calibration
   calibratedCellId?: string; // Serving cell tower CID at time of calibration
   isCalibrated?: boolean; // True when pond anchor is locked
-  isMoving?: boolean; // True when SIM900A handover/displacement is detected
+  isMoving?: boolean; // True when SIMCom A7672S handover/displacement is detected
   moveDistanceKm?: number; // Distance moved from calibrated pond
-  cellLac?: string; // Current serving cell tower LAC
+  isGeofenceBreached?: boolean; // True when machine moves > 1.0 km from calibrated anchor
+  geofenceRadiusKm?: number; // Default 1.0 km geofence radius
+  csq?: number; // Raw CSQ 0-31
+  networkType?: string; // E.g. "4G LTE"
+  modemModel?: string; // E.g. "SIMCom A7672S"
+  satellites?: number; // Number of GNSS satellites locked
+  speedKmH?: number;
+  altitudeM?: number;
+  cellLac?: string; // Current serving cell tower LAC / TAC
   cellId?: string; // Current serving cell tower CID
   lastMovementAt?: string; // Timestamp of latest movement detection
   autoMode: boolean; // Auto turn ON when DO < minDoAlert
@@ -50,6 +58,8 @@ export interface DeviceTelemetry {
   firmwareVersion: string;
   ownerEmail?: string; // Email of account that owns / linked this pond ID
   linkedEmails?: string[]; // Allowed emails who can access this pond
+  triggerSource?: string; // e.g. "Manual App Control", "Physical Green Pushbutton", "Auto DO"
+  manualButtonTrigger?: string; // e.g. "START_BTN", "STOP_BTN"
   voltageMv?: number; // Raw analog voltage from ESP32 in mV
   rawAdc?: number; // Raw ADC reading (0-4095)
   doSlopeK?: number; // Calibrated slope (mg/L per mV)
@@ -57,12 +67,50 @@ export interface DeviceTelemetry {
   isDoCalibrated?: boolean;
   doCalibrationPoints?: DoCalibrationPoint[];
   contactPerson?: PondContact;
+  firmwareScheduler?: boolean; // machine firmware v1.7+ runs schedules, rest and run hours itself
   cooldownEnabled?: boolean; // Toggle in Settings: 6h run / 30m rest protection cycle
   isCoolingDown?: boolean; // True when machine is in the 30-minute rest phase
   cooldownEndsAt?: string; // ISO timestamp when cooldown rest finishes
   cooldownRemainingSeconds?: number; // Live seconds remaining in rest phase
   continuousRunSeconds?: number; // Unbroken continuous run seconds towards 6h limit
   schedules?: AeratorSchedule[]; // Automated ON/OFF run schedules
+  shownSensors?: Partial<Record<'do' | 'ph' | 'orp' | 'temp' | 'sal', boolean>>; // Farmer's display choice for sensors not marked installed
+  installedSensors?: Partial<Record<'do' | 'ph' | 'orp' | 'temp' | 'sal', boolean>>; // Set by admin; sensors not installed are hidden
+  runLogs?: RunLogEntry[]; // Start/stop history saved in the cloud (newest first, max 500)
+  isDemo?: boolean; // Demo pond, not connected to a real machine
+  restMinutes?: number; // Default rest after 6 h continuous run (minutes), used when no schedule sets it
+  specs?: MachineSpecs; // Machine specifications & identity, edited by admin
+  installedAt?: string; // ISO date
+  warrantyEndsAt?: string; // ISO date
+  assignedTech?: string;
+  installedBy?: string;
+  cropStartDate?: string; // YYYY-MM-DD (stocking)
+  cropEndDate?: string; // YYYY-MM-DD (harvest)
+  scheduleEnabled?: boolean; // Home "Schedule" switch (separate from Auto DO mode)
+}
+
+export interface MachineSpecs {
+  model?: string;
+  capacity?: string;
+  serial?: string;
+  motorHp?: number;
+  motorKw?: number; // actual load in kW; if empty, HP x 0.746 is used
+  tariffPerKwh?: number; // electricity price, Rs per unit
+}
+
+/** Start/stop record saved on the device document so admin and customer see the same history. */
+export interface RunLogEntry {
+  id: string;
+  deviceId?: string;
+  action: 'START' | 'STOP';
+  triggerSource: string;
+  timestamp: string;
+  formattedDate?: string;
+  formattedTime?: string;
+  sessionDuration?: string;
+  durationSec?: number;
+  doLevel?: number;
+  by?: string;
 }
 
 export interface AeratorSchedule {
@@ -76,6 +124,7 @@ export interface AeratorSchedule {
   stopAmPm: 'AM' | 'PM';
   enabled: boolean;
   createdAt?: string;
+  restMinutes?: number; // Rest after 6 h continuous run, chosen by the farmer (default 30)
   lastTriggeredAction?: 'START' | 'STOP';
   lastTriggeredDate?: string; // YYYY-MM-DD
 }
@@ -223,4 +272,6 @@ export interface ServiceRequest {
   source?: string;
   createdAt?: string;
   messages?: ChatMessage[];
+  userEmail?: string; // login that raised the request
+  pendingSend?: boolean; // saved on the phone, not yet delivered to the server
 }

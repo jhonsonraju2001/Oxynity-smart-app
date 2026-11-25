@@ -13,9 +13,12 @@
     "test:power-login": "tsx scripts/test-power-and-login-fixes.ts",
     "test:schedules": "tsx scripts/test-schedules-and-access.ts",
     "test:reports-chat": "tsx scripts/test-realtime-reports-and-chat.ts",
-    "test": "npm run lint && npm run test:admin && npm run test:cooldown && npm run test:power-login && npm run test:schedules && npm run test:reports-chat",
+    "test:worker": "node scripts/test-worker-reanchor.mjs",
+    "test:firmware": "sh esp32-firmware/test/run_tests.sh",
+    "test": "npm run lint && npm run test:admin && npm run test:cooldown && npm run test:power-login && npm run test:schedules && npm run test:reports-chat && npm run test:naren-fixes && npm run test:worker && npm run test:firmware",
     "build:android": "vite build && cap sync android",
-    "open:android": "cap open android"
+    "open:android": "cap open android",
+    "test:naren-fixes": "tsx scripts/test-naren-fixes.ts"
   },
   "dependencies": {
     "@capacitor/android": "^8.5.0",

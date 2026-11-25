@@ -1,3 +1,4 @@
+import { isAdminEmail } from '../lib/oxynity';
 import React, { useState, useEffect, useRef } from 'react';
 import {
   Settings,
@@ -746,8 +747,9 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                 )}
               </div>
 
-              {/* 3. Multi-Point DO Sensor Calibration */}
-              {doSensorEnabled && (
+              {/* 3. Multi-Point DO Sensor Calibration: Oxynity staff only (Admin > Sensor setup & calibration).
+                  Farmers must not change it, a wrong value makes every DO reading wrong. */}
+              {doSensorEnabled && isAdminEmail(userEmail) && (
                 <div className="space-y-3 pt-3 border-t border-slate-100 dark:border-slate-800">
                   <div className="flex items-center justify-between">
                     <div className="flex items-center gap-2">
@@ -912,7 +914,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                     <Timer className="w-4 h-4 text-sky-500" />
                     <div>
                       <h4 className="text-xs font-bold text-slate-800 dark:text-slate-200 uppercase tracking-wider">
-                        4. Motor Cooldown Protection
+                        {isAdminEmail(userEmail) && doSensorEnabled ? 4 : 3}. Motor Cooldown Protection
                       </h4>
                       <p className="text-[11px] text-slate-500 dark:text-slate-400">
                         6-Hour Run / 30-Minute Rest Auto Cycle
@@ -952,10 +954,10 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                           When turned <b>ON</b>, the generator runs continuously for <b>6 hours</b>.
                         </li>
                         <li>
-                          At 6 hours, it automatically takes a <b>30-minute cooling break</b> (both relays turn OFF) to prevent motor burnout.
+                          At 6 hours, it automatically takes a <b>rest break</b> (time set in each schedule, default 30 min) (both relays turn OFF) to prevent motor burnout.
                         </li>
                         <li>
-                          After 30 minutes, it <b>automatically resumes</b> (Relay 1 ON, Relay 2 ON in 2 mins).
+                          After the rest, it <b>automatically resumes</b> (Relay 1 ON, Relay 2 ON in 2 mins).
                         </li>
                         <li>
                           If you manually turn the machine <b>OFF before 6 hours</b>, cooldown will <b>not</b> trigger.
@@ -1269,7 +1271,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                     Location (GPS)
                   </span>
                   <span className="text-[11px] text-slate-500 dark:text-slate-400 block mt-0.5">
-                    Used only when you tap &quot;Calibrate Pond Location&quot; to anchor your pond coordinates. Location is never tracked in the background.
+                    The app does not use your phone's location. Weather is shown for the location of your pond's machine.
                   </span>
                 </div>
               </div>

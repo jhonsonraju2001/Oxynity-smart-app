@@ -39,18 +39,24 @@ export const AdminContentManagement: React.FC<AdminContentManagementProps> = ({
   const [announcements, setAnnouncements] = useState<AdminAnnouncement[]>(() => {
     try {
       const saved = localStorage.getItem('oxynity_admin_announcements');
-      if (saved) return JSON.parse(saved);
+      if (saved) {
+        const v = JSON.parse(saved);
+        if (Array.isArray(v)) return v.filter((x) => x && typeof x === 'object');
+      }
     } catch {}
-    return initialAnnouncements;
+    return Array.isArray(initialAnnouncements) ? initialAnnouncements : [];
   });
 
   // Guides State
   const [guides, setGuides] = useState<AdminGuide[]>(() => {
     try {
       const saved = localStorage.getItem('oxynity_admin_guides');
-      if (saved) return JSON.parse(saved);
+      if (saved) {
+        const v = JSON.parse(saved);
+        if (Array.isArray(v)) return v.filter((x) => x && typeof x === 'object');
+      }
     } catch {}
-    return initialGuides;
+    return Array.isArray(initialGuides) ? initialGuides : [];
   });
 
   const [searchQuery, setSearchQuery] = useState('');

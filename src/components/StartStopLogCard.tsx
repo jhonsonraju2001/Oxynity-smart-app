@@ -100,8 +100,8 @@ export const StartStopLogCard: React.FC<StartStopLogCardProps> = ({
       l.formattedDate,
       l.formattedTime,
       `"${l.triggerSource}"`,
-      l.doLevel.toFixed(1),
-      l.waterTemp.toFixed(1),
+      typeof l.doLevel === 'number' && device.doSensorEnabled !== false ? l.doLevel.toFixed(1) : '',
+      typeof l.waterTemp === 'number' ? l.waterTemp.toFixed(1) : '',
       l.sessionDuration || 'N/A',
       l.operator || 'System',
     ]);
@@ -409,7 +409,7 @@ export const StartStopLogCard: React.FC<StartStopLogCardProps> = ({
                   </div>
 
                   <div className="flex items-center gap-1.5 shrink-0">
-                    {device.doSensorEnabled !== false && log.doLevel >= 0 && (
+                    {device.doSensorEnabled !== false && typeof log.doLevel === 'number' && log.doLevel >= 0 && (
                       <span className="font-mono font-bold text-sky-600 dark:text-sky-400 bg-sky-50 dark:bg-sky-950/60 px-1.5 py-0.5 rounded border border-sky-200 dark:border-sky-800">
                         DO: {log.doLevel.toFixed(1)} mg/L
                       </span>
@@ -497,7 +497,7 @@ export const StartStopLogCard: React.FC<StartStopLogCardProps> = ({
                     {/* DO Level */}
                     {device.doSensorEnabled !== false && (
                       <td className="py-3.5 px-4 font-mono font-extrabold text-sky-600 dark:text-sky-400 whitespace-nowrap">
-                        {log.doLevel < 0 ? 'MISSING' : `${log.doLevel.toFixed(1)} mg/L`}
+                        {typeof log.doLevel !== 'number' || log.doLevel < 0 ? 'MISSING' : `${log.doLevel.toFixed(1)} mg/L`}
                       </td>
                     )}
 

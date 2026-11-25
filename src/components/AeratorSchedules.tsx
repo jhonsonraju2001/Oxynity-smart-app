@@ -1,6 +1,10 @@
 import React, { useState } from 'react';
 import { Clock, Plus, Trash2, Edit2, Check, X, Calendar, Power, AlertCircle, ChevronDown } from 'lucide-react';
 import { DeviceTelemetry, AeratorSchedule } from '../types/iot';
+import { findOverlappingSchedule, scheduleLengthMin, scheduleMinutes, scheduleNameFor } from '../lib/oxynity';
+
+const fmtLen = (m: number) => `${Math.floor(m / 60)} h${m % 60 ? ` ${m % 60} min` : ''}`;
+const DEFAULT_NAMES = ['Morning Aeration', 'Afternoon Aeration', 'Evening Aeration', 'Night Aeration'];
 
 interface AeratorSchedulesProps {
   device: DeviceTelemetry;
@@ -28,7 +32,20 @@ export const AeratorSchedules: React.FC<AeratorSchedulesProps> = ({
   const [stopMinute, setStopMinute] = useState<number>(30);
   const [stopAmPm, setStopAmPm] = useState<'AM' | 'PM'>('AM');
 
+  const [restMinutes, setRestMinutes] = useState<number>(30);
   const [formError, setFormError] = useState<string | null>(null);
+  const [listError, setListError] = useState<string | null>(null);
+  const errRef = React.useRef<HTMLDivElement>(null);
+  React.useEffect(() => {
+    if (formError) errRef.current?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+  }, [formError]);
+  // Name follows the start time until the farmer types his own name.
+  const [nameTouched, setNameTouched] = useState(false);
+  React.useEffect(() => {
+    if (nameTouched) return;
+    const start = scheduleMinutes({ startHour, startMinute, startAmPm, stopHour, stopMinute, stopAmPm }).start;
+    setName(scheduleNameFor(start));
+  }, [startHour, startMinute, startAmPm, nameTouched]);
 
   // In-App Time Picker Modal State
   const [activePicker, setActivePicker] = useState<{
@@ -46,7 +63,10 @@ export const AeratorSchedules: React.FC<AeratorSchedulesProps> = ({
     setStopHour(8);
     setStopMinute(30);
     setStopAmPm('AM');
+    setRestMinutes(30);
     setFormError(null);
+    setListError(null);
+    setNameTouched(false);
     setEditingId(null);
     setIsFormOpen(false);
   };
@@ -60,11 +80,24 @@ export const AeratorSchedules: React.FC<AeratorSchedulesProps> = ({
     setStopHour(sch.stopHour);
     setStopMinute(sch.stopMinute);
     setStopAmPm(sch.stopAmPm);
+    setRestMinutes(sch.restMinutes || 30);
+    setNameTouched(!DEFAULT_NAMES.includes(sch.name));
     setFormError(null);
     setIsFormOpen(true);
   };
 
   const handleToggleSchedule = (id: string) => {
+    const sch = schedules.find((s) => s.id === id);
+    if (sch && !sch.enabled) {
+      const clash = findOverlappingSchedule(sch, schedules, id);
+      if (clash) {
+        setListError(
+          `"${sch.name}" cannot be switched on: its time overlaps "${clash.name}" (${formatTime(clash.startHour, clash.startMinute, clash.startAmPm)} - ${formatTime(clash.stopHour, clash.stopMinute, clash.stopAmPm)}). Edit the times first.`
+        );
+        return;
+      }
+    }
+    setListError(null);
     const next = schedules.map((s) => (s.id === id ? { ...s, enabled: !s.enabled } : s));
     onUpdateSchedules(next);
   };
@@ -87,6 +120,16 @@ export const AeratorSchedules: React.FC<AeratorSchedulesProps> = ({
       return;
     }
 
+    // Two schedules must never cover the same time: the machine would not stop when one of them ends.
+    const cand = { startHour, startMinute, startAmPm, stopHour, stopMinute, stopAmPm };
+    const clash = findOverlappingSchedule(cand, schedules, editingId);
+    if (clash) {
+      setFormError(
+        `This time overlaps "${clash.name}" (${formatTime(clash.startHour, clash.startMinute, clash.startAmPm)} - ${formatTime(clash.stopHour, clash.stopMinute, clash.stopAmPm)}). During the overlap the machine cannot stop. Change the start or stop time, or edit "${clash.name}".`
+      );
+      return;
+    }
+
     if (editingId) {
       // Update existing
       const next = schedules.map((s) =>
@@ -100,6 +143,7 @@ export const AeratorSchedules: React.FC<AeratorSchedulesProps> = ({
               stopHour,
               stopMinute,
               stopAmPm,
+              restMinutes,
             }
           : s
       );
@@ -115,6 +159,7 @@ export const AeratorSchedules: React.FC<AeratorSchedulesProps> = ({
         stopHour,
         stopMinute,
         stopAmPm,
+        restMinutes,
         enabled: true,
         createdAt: new Date().toISOString(),
       };
@@ -131,7 +176,7 @@ export const AeratorSchedules: React.FC<AeratorSchedulesProps> = ({
   const activeCount = schedules.filter((s) => s.enabled).length;
 
   return (
-    <div className="bg-white dark:bg-[#12313A] rounded-[24px] border border-[#DDE8EA] dark:border-[#1F4650] p-4 shadow-xs space-y-3 transition-all">
+    <div className="ox-card p-4 space-y-3 transition-all">
       {/* Header */}
       <div className="flex items-center justify-between gap-1.5 sm:gap-2 w-full min-w-0">
         <div className="flex items-center gap-2 min-w-0">
@@ -184,7 +229,7 @@ export const AeratorSchedules: React.FC<AeratorSchedulesProps> = ({
           </div>
 
           {formError && (
-            <div className="text-[11px] font-bold text-rose-600 dark:text-rose-400 bg-rose-50 dark:bg-rose-950/60 p-2 rounded-lg flex items-center gap-1.5 border border-rose-200 dark:border-rose-800">
+            <div ref={errRef} className="text-[11px] font-bold text-rose-600 dark:text-rose-400 bg-rose-50 dark:bg-rose-950/60 p-2 rounded-lg flex items-center gap-1.5 border border-rose-200 dark:border-rose-800">
               <AlertCircle className="w-3.5 h-3.5 shrink-0" />
               <span>{formError}</span>
             </div>
@@ -198,17 +243,23 @@ export const AeratorSchedules: React.FC<AeratorSchedulesProps> = ({
             <input
               type="text"
               value={name}
-              onChange={(e) => setName(e.target.value)}
+              onChange={(e) => {
+                setName(e.target.value);
+                setNameTouched(true);
+              }}
               placeholder="e.g. Morning DO Boost"
               className="w-full bg-white dark:bg-[#071A1F] border border-[#DDE8EA] dark:border-[#1F4650] rounded-xl px-3 py-2 text-xs font-bold text-[#0B2B33] dark:text-[#E8F4F6] focus:outline-hidden focus:ring-2 focus:ring-[#0E7C86] dark:focus:ring-[#19C3D1]"
             />
             {/* Presets */}
             <div className="flex flex-wrap gap-1.5 pt-1">
-              {['Morning Boost', 'Afternoon Cycle', 'Night Aeration'].map((preset) => (
+              {['Morning Aeration', 'Afternoon Aeration', 'Evening Aeration', 'Night Aeration'].map((preset) => (
                 <button
                   type="button"
                   key={preset}
-                  onClick={() => setName(preset)}
+                  onClick={() => {
+                    setName(preset);
+                    setNameTouched(true);
+                  }}
                   className="text-[10px] font-bold px-2 py-0.5 rounded-md bg-white dark:bg-[#12313A] text-[#0B2B33] dark:text-[#E8F4F6] border border-[#DDE8EA] dark:border-[#1F4650] hover:border-[#0E7C86] cursor-pointer transition-colors"
                 >
                   + {preset}
@@ -368,6 +419,44 @@ export const AeratorSchedules: React.FC<AeratorSchedulesProps> = ({
             </div>
           </div>
 
+          {(() => {
+            const len = scheduleLengthMin({ startHour, startMinute, startAmPm, stopHour, stopMinute, stopAmPm });
+            const overnight = scheduleMinutes({ startHour, startMinute, startAmPm, stopHour, stopMinute, stopAmPm });
+            return len > 0 ? (
+              <p className="text-[11px] font-bold text-[#0B2B33] dark:text-[#E8F4F6]">
+                Runs {fmtLen(len)}
+                {overnight.start > overnight.stop ? ' (overnight, stops next day)' : ''}
+                {len > 360 ? ` · rests ${Math.floor(len / 360) === 1 ? 'once' : `${Math.floor(len / 360)} times`} after every 6 h` : ' · no rest needed (under 6 h)'}
+              </p>
+            ) : null;
+          })()}
+
+          {/* Rest time after 6 hours of continuous running (farmer decides) */}
+          <div className="pt-2 border-t border-[#DDE8EA] dark:border-[#1F4650]">
+            <label className="block text-xs font-extrabold text-[#0B2B33] dark:text-[#E8F4F6] mb-1">
+              Machine rest time
+            </label>
+            <p className="text-[11px] text-[#5B7479] dark:text-[#9DB8BD] mb-2">
+              After every 6 hours of continuous running the machine rests, then restarts by itself.
+            </p>
+            <div className="flex flex-wrap gap-1.5">
+              {[15, 20, 30, 45, 60, 90].map((m) => (
+                <button
+                  key={m}
+                  type="button"
+                  onClick={() => setRestMinutes(m)}
+                  className={`px-3 py-1.5 rounded-xl text-xs font-extrabold border cursor-pointer ${
+                    restMinutes === m
+                      ? 'bg-[#0E7C86] text-white border-[#0E7C86]'
+                      : 'bg-white dark:bg-[#12313A] text-[#0B2B33] dark:text-[#E8F4F6] border-[#DDE8EA] dark:border-[#1F4650]'
+                  }`}
+                >
+                  {m} min
+                </button>
+              ))}
+            </div>
+          </div>
+
           {/* Form Action Buttons */}
           <div className="flex items-center justify-end gap-2 pt-2 border-t border-[#DDE8EA] dark:border-[#1F4650]">
             <button
@@ -388,6 +477,13 @@ export const AeratorSchedules: React.FC<AeratorSchedulesProps> = ({
         </form>
       )}
 
+      {listError && (
+        <div className="text-[11px] font-bold text-rose-600 dark:text-rose-400 bg-rose-50 dark:bg-rose-950/60 p-2 rounded-lg flex items-start gap-1.5 border border-rose-200 dark:border-rose-800">
+          <AlertCircle className="w-3.5 h-3.5 shrink-0 mt-px" />
+          <span>{listError}</span>
+        </div>
+      )}
+
       {/* Schedule Items List */}
       {schedules.length === 0 ? (
         <div className="bg-[#F8FBFC] dark:bg-[#0E2830] rounded-xl p-4 text-center border border-dashed border-[#DDE8EA] dark:border-[#1F4650] space-y-1.5">
@@ -404,6 +500,8 @@ export const AeratorSchedules: React.FC<AeratorSchedulesProps> = ({
           {schedules.map((sch) => {
             const startLabel = formatTime(sch.startHour, sch.startMinute, sch.startAmPm);
             const stopLabel = formatTime(sch.stopHour, sch.stopMinute, sch.stopAmPm);
+            const clash = sch.enabled ? findOverlappingSchedule(sch, schedules, sch.id) : null;
+            const len = scheduleLengthMin(sch);
 
             return (
               <div
@@ -432,7 +530,7 @@ export const AeratorSchedules: React.FC<AeratorSchedulesProps> = ({
                   </div>
 
                   {/* Time Range Badge */}
-                  <div className="flex items-center gap-1.5 text-xs font-mono font-extrabold mt-1 text-slate-700 dark:text-slate-300">
+                  <div className="flex flex-wrap items-center gap-x-1.5 gap-y-0.5 text-xs font-mono font-extrabold mt-1 text-slate-700 dark:text-slate-300 whitespace-nowrap">
                     <span className="text-emerald-600 dark:text-emerald-400 font-black">
                       {startLabel}
                     </span>
@@ -440,7 +538,15 @@ export const AeratorSchedules: React.FC<AeratorSchedulesProps> = ({
                     <span className="text-rose-600 dark:text-rose-400 font-black">
                       {stopLabel}
                     </span>
+                    <span className="basis-full text-slate-500 dark:text-slate-400 font-sans text-[11px] font-bold whitespace-normal">
+                      Runs {fmtLen(len)}{len > 360 ? ` · rest ${sch.restMinutes || 30} min after every 6 h` : ''}
+                    </span>
                   </div>
+                  {clash && (
+                    <div className="mt-1.5 text-[10.5px] font-bold text-amber-800 dark:text-amber-300 bg-amber-50 dark:bg-amber-950/50 border border-amber-300 dark:border-amber-800 rounded-lg px-2 py-1">
+                      ⚠ Overlaps "{clash.name}". The machine will not stop at {stopLabel}. Edit one of them.
+                    </div>
+                  )}
                 </div>
 
                 {/* Right Actions: Enable Toggle, Edit, Delete */}
@@ -448,18 +554,12 @@ export const AeratorSchedules: React.FC<AeratorSchedulesProps> = ({
                   {/* Enable / Disable Toggle Switch */}
                   <button
                     type="button"
+                    role="switch"
+                    aria-checked={!!sch.enabled}
                     onClick={() => handleToggleSchedule(sch.id)}
-                    className={`relative inline-flex h-5 w-9 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none ${
-                      sch.enabled ? 'bg-sky-500' : 'bg-slate-300 dark:bg-slate-700'
-                    }`}
+                    className="ox-switch"
                     title={sch.enabled ? 'Disable schedule' : 'Enable schedule'}
-                  >
-                    <span
-                      className={`pointer-events-none inline-block h-4 w-4 transform rounded-full bg-white shadow-sm ring-0 transition duration-200 ease-in-out ${
-                        sch.enabled ? 'translate-x-4' : 'translate-x-0'
-                      }`}
-                    />
-                  </button>
+                  />
 
                   {/* Edit */}
                   <button

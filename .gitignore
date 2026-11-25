@@ -19,3 +19,5 @@ android/.idea/
 *.jks
 *.keystore
 com4_output.txt
+.wrangler/
+cloudflare-worker/.wrangler/

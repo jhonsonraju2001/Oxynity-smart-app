@@ -8,63 +8,14 @@ interface ServiceViewProps {
   device: DeviceTelemetry;
   userName?: string;
   userEmail?: string;
+  /** All pond IDs linked to this login: only their requests are shown. */
+  myPondIds?: string[];
 }
 
-const STORAGE_KEY = 'oxynity_service_requests';
+const STORAGE_KEY = 'oxynity_service_requests_v2';
 
-const SEED_REQUESTS: ServiceRequest[] = [
-  {
-    id: 'SR-1002',
-    type: 'Sensor issue',
-    desc: 'pH probe reading drifts slightly after heavy rain. Needs cleaning check.',
-    date: new Date(Date.now() - 2 * 86400000).toISOString().slice(0, 10),
-    phone: '+91 98765 43210',
-    status: 'In progress',
-    stage: 2,
-    deviceId: 'OXY-0113',
-    pondName: 'North Fingerling Pond',
-    farmer: 'Farmer Operator',
-    messages: [
-      {
-        id: 'msg-seed-1',
-        sender: 'client',
-        senderName: 'Farmer Operator',
-        text: 'pH probe reading drifts slightly after heavy rain. Needs cleaning check.',
-        timestamp: new Date(Date.now() - 2 * 86400000).toISOString(),
-      },
-      {
-        id: 'msg-seed-2',
-        sender: 'admin',
-        senderName: 'Oxynity Support (Kiran)',
-        text: 'Hello! Technician Kiran has been assigned. Please keep the probe submerged in clean pond water.',
-        timestamp: new Date(Date.now() - 86400000).toISOString(),
-      },
-    ],
-  },
-  {
-    id: 'SR-1001',
-    type: 'Maintenance',
-    desc: 'Routine scheduled six-month impeller & aeration tube inspection.',
-    date: new Date(Date.now() - 20 * 86400000).toISOString().slice(0, 10),
-    phone: '+91 98765 43210',
-    status: 'Resolved',
-    stage: 3,
-    deviceId: 'OXY-0101',
-    pondName: 'Venu Pond',
-    farmer: 'Farmer Operator',
-    messages: [
-      {
-        id: 'msg-seed-0',
-        sender: 'client',
-        senderName: 'Farmer Operator',
-        text: 'Routine scheduled six-month impeller inspection.',
-        timestamp: new Date(Date.now() - 20 * 86400000).toISOString(),
-      },
-    ],
-  },
-];
 
-export const ServiceView: React.FC<ServiceViewProps> = ({ device, userName = 'Farmer Operator', userEmail }) => {
+export const ServiceView: React.FC<ServiceViewProps> = ({ device, userName = 'Farmer Operator', userEmail, myPondIds = [] }) => {
   const [requests, setRequests] = useState<ServiceRequest[]>(() => {
     try {
       const saved = localStorage.getItem(STORAGE_KEY);
@@ -73,7 +24,7 @@ export const ServiceView: React.FC<ServiceViewProps> = ({ device, userName = 'Fa
         if (Array.isArray(parsed) && parsed.length > 0) return parsed;
       }
     } catch {}
-    return SEED_REQUESTS;
+    return [];
   });
 
   const [reqType, setReqType] = useState('Maintenance');
@@ -87,6 +38,7 @@ export const ServiceView: React.FC<ServiceViewProps> = ({ device, userName = 'Fa
   const [activeChatRequest, setActiveChatRequest] = useState<ServiceRequest | null>(null);
   const [chatInput, setChatInput] = useState('');
   const [isSendingMsg, setIsSendingMsg] = useState(false);
+  const [isSubmitting, setIsSubmitting] = useState(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
   // Auto-scroll chat to bottom
@@ -103,13 +55,19 @@ export const ServiceView: React.FC<ServiceViewProps> = ({ device, userName = 'Fa
       const unsub = onSnapshot(
         colRef,
         (snap) => {
-          if (!snap.empty) {
+          {
             const list: ServiceRequest[] = snap.docs.map((d) => ({
               id: d.id,
               ...(d.data() as any),
             }));
 
             // Filter requests relevant to this user's pond or show all user's requests
+            // Only this customer's requests (their own ponds or sent from this login)
+            const mine = list.filter((r: any) => (myPondIds.length ? myPondIds.includes(r.deviceId) : r.deviceId === device.deviceId) || (!!userEmail && r.userEmail === userEmail));
+            // keep requests still waiting to be sent
+            const pending = loadPending().filter((p) => !mine.some((r) => r.id === p.id));
+            list.length = 0;
+            list.push(...pending, ...mine);
             list.sort((a, b) => (b.createdAt || b.date || '').localeCompare(a.createdAt || a.date || ''));
             setRequests(list);
             try {
@@ -133,7 +91,47 @@ export const ServiceView: React.FC<ServiceViewProps> = ({ device, userName = 'Fa
     }
   }, [device.deviceId, activeChatRequest?.id]);
 
+  // --- reliable sending: 12 s timeout, saved on the phone and retried until it reaches the server ---
+  const PENDING_KEY = 'oxynity_service_pending';
+  const loadPending = (): ServiceRequest[] => {
+    try { return JSON.parse(localStorage.getItem(PENDING_KEY) || '[]'); } catch { return []; }
+  };
+  const savePending = (l: ServiceRequest[]) => {
+    try { localStorage.setItem(PENDING_KEY, JSON.stringify(l)); } catch {}
+  };
+  const trySend = async (req: ServiceRequest): Promise<boolean> => {
+    try {
+      const clean = JSON.parse(JSON.stringify({ ...req, pendingSend: undefined }));
+      await Promise.race([
+        setDoc(doc(db, 'service_requests', req.id), clean, { merge: true }),
+        new Promise((_, rej) => setTimeout(() => rej(new Error('timeout')), 12000)),
+      ]);
+      return true;
+    } catch (err) {
+      console.warn('Service request not sent:', err);
+      return false;
+    }
+  };
+  useEffect(() => {
+    const retry = async () => {
+      const list = loadPending();
+      if (!list.length) return;
+      const left: ServiceRequest[] = [];
+      for (const r of list) if (!(await trySend(r))) left.push(r);
+      savePending(left);
+      if (left.length < list.length) {
+        setRequests((prev) => prev.map((r) => (left.some((x) => x.id === r.id) ? r : ({ ...r, pendingSend: false } as any))));
+        if (!left.length) setErrorMsg('');
+      }
+    };
+    retry();
+    const t = setInterval(retry, 60000);
+    window.addEventListener('online', retry);
+    return () => { clearInterval(t); window.removeEventListener('online', retry); };
+  }, []);
+
   const handleSubmit = async (e: React.FormEvent) => {
+    if (isSubmitting) { e.preventDefault(); return; }
     e.preventDefault();
     if (!desc.trim()) {
       setErrorMsg('Please describe the problem.');
@@ -149,7 +147,8 @@ export const ServiceView: React.FC<ServiceViewProps> = ({ device, userName = 'Fa
       type: reqType,
       desc: desc.trim(),
       date: date || nowIso.slice(0, 10),
-      phone: phone.trim() || '+91 98480 00000',
+      phone: phone.trim(),
+      userEmail: userEmail || '',
       status: 'Open',
       stage: 0,
       deviceId: device.deviceId || 'OXY-DEFAULT',
@@ -177,18 +176,20 @@ export const ServiceView: React.FC<ServiceViewProps> = ({ device, userName = 'Fa
       localStorage.setItem(STORAGE_KEY, JSON.stringify([newReq, ...requests]));
     } catch {}
 
-    // Save to Firestore so it appears in Admin Panel immediately
-    try {
-      const docRef = doc(db, 'service_requests', newReq.id);
-      await setDoc(docRef, newReq, { merge: true });
-    } catch (err) {
-      console.warn('Could not save service request to Firestore:', err);
-    }
-
+    // Save to Firestore so it appears in the Admin Panel. Tell the farmer the truth if it did not go.
+    setIsSubmitting(true);
+    const sent = await trySend(newReq);
+    setIsSubmitting(false);
     setDesc('');
     setPhone('');
-    setSuccessMsg(`Service request ${newReq.id} submitted! Technician support has been notified.`);
-    setTimeout(() => setSuccessMsg(''), 5000);
+    if (sent) {
+      setSuccessMsg(`Service request ${newReq.id} sent. Oxynity support has been notified.`);
+      setTimeout(() => setSuccessMsg(''), 6000);
+    } else {
+      savePending([{ ...newReq, pendingSend: true } as any, ...loadPending()]);
+      setRequests((prev) => prev.map((r) => (r.id === newReq.id ? ({ ...r, pendingSend: true } as any) : r)));
+      setErrorMsg(`Request ${newReq.id} is saved on this phone but could NOT be sent yet (no internet or server busy). It will be sent automatically. For urgent help please call Oxynity support.`);
+    }
   };
 
   const handleSendMessage = async (e: React.FormEvent) => {
@@ -236,7 +237,7 @@ export const ServiceView: React.FC<ServiceViewProps> = ({ device, userName = 'Fa
       </div>
 
       {/* New Request Card */}
-      <div className="bg-white dark:bg-[#12313A] rounded-[24px] p-4 sm:p-5 border border-[#DDE8EA] dark:border-[#1F4650] shadow-xs space-y-3">
+      <div className="ox-card p-4 sm:p-5 space-y-3">
         <div className="flex items-center gap-2">
           <Wrench className="w-4 h-4 text-[#0E7C86] dark:text-[#19C3D1]" />
           <h3 className="text-sm font-extrabold text-[#0B2B33] dark:text-[#E8F4F6]">
@@ -324,7 +325,7 @@ export const ServiceView: React.FC<ServiceViewProps> = ({ device, userName = 'Fa
               className="w-full min-h-[50px] rounded-2xl bg-[#0E7C86] hover:bg-[#0c6b73] text-white font-extrabold text-xs sm:text-sm flex items-center justify-center gap-2 shadow-md cursor-pointer active:scale-98 transition-all"
             >
               <Send className="w-4 h-4" />
-              <span>Send request</span>
+              <span>{isSubmitting ? 'Sending…' : 'Send request'}</span>
             </button>
 
             <a
@@ -339,7 +340,7 @@ export const ServiceView: React.FC<ServiceViewProps> = ({ device, userName = 'Fa
       </div>
 
       {/* My Requests List Card */}
-      <div className="bg-white dark:bg-[#12313A] rounded-[24px] p-4 sm:p-5 border border-[#DDE8EA] dark:border-[#1F4650] shadow-xs space-y-3">
+      <div className="ox-card p-4 sm:p-5 space-y-3">
         <h3 className="text-sm font-extrabold text-[#0B2B33] dark:text-[#E8F4F6]">
           My requests ({requests.length})
         </h3>
@@ -372,7 +373,7 @@ export const ServiceView: React.FC<ServiceViewProps> = ({ device, userName = 'Fa
                   <span
                     className={`px-2.5 py-0.5 rounded-full text-[10px] font-extrabold ${statusBadge.bg} ${statusBadge.text}`}
                   >
-                    {q.status}
+                    {(q as any).pendingSend ? 'Not sent yet' : q.status}
                   </span>
                 </div>
 
@@ -381,7 +382,7 @@ export const ServiceView: React.FC<ServiceViewProps> = ({ device, userName = 'Fa
                 </p>
 
                 <div className="flex items-center justify-between text-[10px] text-[#5B7479] dark:text-[#9DB8BD] pt-0.5 font-medium flex-wrap gap-2">
-                  <span>Preferred: {q.date} · Phone: {q.phone}</span>
+                  <span>Preferred: {q.date}{q.phone ? ` · Phone: ${q.phone}` : ''}</span>
 
                   {/* Open Chat with Support Button */}
                   <button

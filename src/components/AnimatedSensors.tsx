@@ -74,6 +74,9 @@ export const AnimatedSensors: React.FC<AnimatedSensorsProps> = ({
   const effectiveFilter =
     activeFilter !== 'all' && !sensorsEnabled[activeFilter] ? 'all' : activeFilter;
 
+  // No sensor installed / switched on for this pond: hide the whole section.
+  if (!hasAnyEnabled) return null;
+
   const filterButtons = [
     { key: 'all' as const, label: 'All', show: hasAnyEnabled },
     { key: 'do' as const, label: 'DO', show: sensorsEnabled.do },
@@ -172,9 +175,9 @@ export const AnimatedSensors: React.FC<AnimatedSensorsProps> = ({
   return (
     <div className="space-y-3.5 select-none">
       {/* ── Section Title & Filter Tabs ───────────────────────────── */}
-      <div className="flex items-center justify-between gap-2">
+      <div className="flex flex-col gap-2">
         <div className="flex items-center gap-1.5">
-          <Activity className="w-4.5 h-4.5 text-cyan-500" />
+          <Activity className="w-4.5 h-4.5 text-[#0E7C86] dark:text-[#19C3D1]" />
           <h2 className="text-sm font-extrabold uppercase tracking-wider text-slate-800 dark:text-slate-100">
             Water Quality Sensors
           </h2>
@@ -182,14 +185,14 @@ export const AnimatedSensors: React.FC<AnimatedSensorsProps> = ({
 
         {/* Quick Filter Segment Buttons */}
         {hasAnyEnabled && filterButtons.length > 1 && (
-          <div className="flex bg-slate-100 dark:bg-slate-800 p-0.5 rounded-xl border border-slate-200 dark:border-slate-700/60 overflow-x-auto no-scrollbar max-w-[200px] sm:max-w-none">
+          <div className="flex self-start max-w-full bg-[#E6EFF1] dark:bg-[#08222A] p-1 rounded-xl border border-[#DDE8EA] dark:border-[#1F4650] overflow-x-auto no-scrollbar">
             {filterButtons.map(({ key, label }) => (
               <button
                 key={key}
                 onClick={() => setActiveFilter(key)}
-                className={`px-2 py-0.5 text-[10px] font-extrabold rounded-lg transition-all capitalize cursor-pointer whitespace-nowrap ${
+                className={`px-3 py-1 text-[11px] font-extrabold rounded-lg transition-all cursor-pointer whitespace-nowrap ${
                   effectiveFilter === key
-                    ? 'bg-white dark:bg-slate-900 text-cyan-600 dark:text-cyan-400 shadow-xs'
+                    ? 'bg-white dark:bg-[#12313A] text-[#0E7C86] dark:text-[#19C3D1] shadow-xs'
                     : 'text-slate-500 dark:text-slate-400 hover:text-slate-800'
                 }`}
               >

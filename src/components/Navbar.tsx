@@ -45,7 +45,7 @@ export const Navbar: React.FC<NavbarProps> = ({
     >
       <div className="w-full flex items-center justify-between gap-2">
         {/* ── Left: Brand Title & Interactive Pond Name Switcher ── */}
-        <div className="relative">
+        <div className="relative min-w-0 flex-1">
           <small className="text-[11px] font-extrabold tracking-[0.12em] text-[#0E7C86] dark:text-[#19C3D1] uppercase block leading-tight">
             OXYNITY
           </small>
@@ -54,10 +54,10 @@ export const Navbar: React.FC<NavbarProps> = ({
             <button
               type="button"
               onClick={() => setShowPondDropdown((v) => !v)}
-              className="flex items-center gap-1.5 text-xl sm:text-2xl font-black text-[#0B2B33] dark:text-[#E8F4F6] leading-tight cursor-pointer hover:opacity-80 transition-opacity text-left group"
+              className="flex items-center gap-1.5 max-w-full text-xl sm:text-2xl font-black text-[#0B2B33] dark:text-[#E8F4F6] leading-tight cursor-pointer hover:opacity-80 transition-opacity text-left group"
               title="Click to switch pond or link a new one"
             >
-              <span className="truncate max-w-[160px] sm:max-w-[210px]">{pondDisplayName}</span>
+              <span className="truncate min-w-0">{pondDisplayName}</span>
               <ChevronDown
                 className={`w-4 h-4 text-[#5B7479] dark:text-[#9DB8BD] shrink-0 transition-transform duration-200 ${
                   showPondDropdown ? 'rotate-180 text-[#0E7C86] dark:text-[#19C3D1]' : ''
@@ -164,19 +164,19 @@ export const Navbar: React.FC<NavbarProps> = ({
         </div>
 
         {/* ── Right: Status Pill & Settings Gear Button ────────────── */}
-        <div className="flex items-center gap-2 shrink-0">
+        <div className="flex items-center gap-2 shrink-0 max-w-[58%]">
           {/* Status Pill */}
           <div
-            className="flex items-center gap-2 bg-white dark:bg-[#12313A] border border-[#DDE8EA] dark:border-[#1F4650] rounded-full px-3 py-1.5 shadow-xs"
+            className="flex items-center gap-1.5 min-w-0 bg-white dark:bg-[#12313A] border border-[#DDE8EA] dark:border-[#1F4650] rounded-full px-3 py-1.5 shadow-xs"
             role="status"
             title={statusText || (isOnline ? 'System online' : 'System offline')}
           >
             <span
               className={`w-2 h-2 rounded-full ${
                 isOnline ? 'bg-[#1E9E5A] animate-pulse' : 'bg-[#E5484D]'
-              }`}
+              } shrink-0`}
             />
-            <span className="text-xs font-bold text-[#0B2B33] dark:text-[#E8F4F6] tracking-tight">
+            <span className="text-xs font-bold text-[#0B2B33] dark:text-[#E8F4F6] tracking-tight truncate whitespace-nowrap">
               {statusText || (isOnline ? 'System online' : 'System offline')}
             </span>
           </div>
@@ -186,7 +186,7 @@ export const Navbar: React.FC<NavbarProps> = ({
             type="button"
             onClick={onOpenSettings}
             aria-label="Settings"
-            className="relative w-10 h-10 rounded-full bg-white dark:bg-[#12313A] border border-[#DDE8EA] dark:border-[#1F4650] flex items-center justify-center text-[#0B2B33] dark:text-[#E8F4F6] hover:bg-slate-50 dark:hover:bg-[#1B3A43] shadow-xs cursor-pointer active:scale-95 transition-all"
+            className="relative shrink-0 w-10 h-10 rounded-full bg-white dark:bg-[#12313A] border border-[#DDE8EA] dark:border-[#1F4650] flex items-center justify-center text-[#0B2B33] dark:text-[#E8F4F6] hover:bg-slate-50 dark:hover:bg-[#1B3A43] shadow-xs cursor-pointer active:scale-95 transition-all"
           >
             <Settings className="w-5 h-5 stroke-[2]" />
             {unreadAlertCount > 0 && (

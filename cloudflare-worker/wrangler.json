@@ -1,5 +1,11 @@
 {
   "name": "oxynity-pond-bridge",
   "main": "worker.js",
-  "compatibility_date": "2026-09-01"
+  "compatibility_date": "2026-09-01",
+  "kv_namespaces": [
+    {
+      "binding": "OXYNITY_KV",
+      "id": "4d95ef26ae6c4a2dbdac7a72e8a25498"
+    }
+  ]
 }

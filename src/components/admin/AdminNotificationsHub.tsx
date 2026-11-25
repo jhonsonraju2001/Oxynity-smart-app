@@ -40,9 +40,15 @@ export const AdminNotificationsHub: React.FC<AdminNotificationsHubProps> = ({
   const [dispatches, setDispatches] = useState<AdminNotificationDispatch[]>(() => {
     try {
       const saved = localStorage.getItem('oxynity_admin_notifications');
-      if (saved) return JSON.parse(saved);
+      if (saved) {
+        const v = JSON.parse(saved);
+        if (Array.isArray(v))
+          return v
+            .filter((d) => d && typeof d === 'object')
+            .map((d) => ({ ...d, recipients: Array.isArray(d.recipients) ? d.recipients.filter(Boolean) : [] }));
+      }
     } catch {}
-    return initialDispatches;
+    return Array.isArray(initialDispatches) ? initialDispatches : [];
   });
 
   const [searchQuery, setSearchQuery] = useState('');
@@ -82,34 +88,41 @@ export const AdminNotificationsHub: React.FC<AdminNotificationsHubProps> = ({
 
     // Build recipient list based on audience
     let targetRecipients: AdminNotificationRecipient[] = [];
+    const users = (Array.isArray(allUsers) ? allUsers : []).filter(Boolean);
+    const pondsOf = (u: any): string[] => (Array.isArray(u?.assignedPondIds) ? u.assignedPondIds : []);
+    if (!users.length) {
+      setIsSending(false);
+      alert('No users yet. Add users in "User Management" first.');
+      return;
+    }
 
     if (composeForm.targetAudience === 'all') {
-      targetRecipients = allUsers.map((u) => ({
+      targetRecipients = users.map((u) => ({
         userId: u.id,
         userEmail: u.email,
         userName: u.name,
-        pondId: u.assignedPondIds[0] || 'Unassigned',
+        pondId: pondsOf(u)[0] || 'Unassigned',
         status: 'unnotified',
         deliveredAt: new Date().toISOString(),
       }));
     } else if (composeForm.targetAudience === 'specific_user') {
-      const foundUser = allUsers.find((u) => u.email === composeForm.targetUserEmail) || allUsers[0];
+      const foundUser = users.find((u) => u.email === composeForm.targetUserEmail) || users[0];
       targetRecipients = [
         {
           userId: foundUser.id,
           userEmail: foundUser.email,
           userName: foundUser.name,
-          pondId: foundUser.assignedPondIds[0] || 'Unassigned',
+          pondId: pondsOf(foundUser)[0] || 'Unassigned',
           status: 'unnotified',
           deliveredAt: new Date().toISOString(),
         },
       ];
     } else {
       // specific_pond
-      const matchingUsers = allUsers.filter((u) =>
-        u.assignedPondIds.includes(composeForm.targetPondId)
+      const matchingUsers = users.filter((u) =>
+        pondsOf(u).includes(composeForm.targetPondId)
       );
-      targetRecipients = (matchingUsers.length > 0 ? matchingUsers : [allUsers[0]]).map((u) => ({
+      targetRecipients = (matchingUsers.length > 0 ? matchingUsers : [users[0]]).map((u) => ({
         userId: u.id,
         userEmail: u.email,
         userName: u.name,

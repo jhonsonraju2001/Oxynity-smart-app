@@ -1,3 +1,4 @@
+import { isSensorInstalled } from '../lib/oxynity';
 // Oxynity Smart Admin Data & Map Constants
 // High-detail SVG vector paths for India and all Indian states & territories
 import { exportFile } from '../lib/fileExport';
@@ -177,6 +178,7 @@ export const ADMIN_TECH_BY_DISTRICT: Record<string, string> = {
 
 const MON = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
 export function fmtDate(d: Date): string {
+  if (!d || isNaN(d.getTime())) return "Not recorded";
   return `${d.getDate()} ${MON[d.getMonth()]} ${d.getFullYear()}`;
 }
 
@@ -431,7 +433,7 @@ export function telemetryToAdminRecord(
   const isRunning = dev.status === 'ON';
   const isCritical =
     dev.status === 'ERROR' ||
-    (dev.doSensorEnabled !== false && dev.doLevel >= 0 && dev.doLevel < (dev.minDoAlert || 5.0));
+    (isSensorInstalled(dev, 'do') && dev.doLevel >= 0 && dev.doLevel < (dev.minDoAlert || 5.0));
   const isMaint =
     dev.status === 'MAINTENANCE' ||
     (dev.totalRunHours || 0) >=
@@ -443,12 +445,13 @@ export function telemetryToAdminRecord(
   else if (isRunning) adminStatus = 'running';
   else adminStatus = 'standby';
 
-  const installedDate = new Date(2025, 3, 10 + (idx % 20));
-  const wEndDate = new Date(2027, 3, 10 + (idx % 20));
-  const diffDays = Math.max(
-    0,
-    Math.round((wEndDate.getTime() - Date.now()) / (1000 * 60 * 60 * 24))
-  );
+  // Real dates when saved on the device record (installedAt / warrantyEndsAt); otherwise unknown.
+  const d: any = dev;
+  const installedDate = d.installedAt ? new Date(d.installedAt) : new Date(NaN);
+  const wEndDate = d.warrantyEndsAt ? new Date(d.warrantyEndsAt) : new Date(NaN);
+  const diffDays = isNaN(wEndDate.getTime())
+    ? 0
+    : Math.max(0, Math.round((wEndDate.getTime() - Date.now()) / (1000 * 60 * 60 * 24)));
 
   const locParts = (dev.locationName || '').split(',').map((s) => s.trim());
   const village = locParts[0] || 'Coastal Basin';
@@ -467,7 +470,7 @@ export function telemetryToAdminRecord(
     k: idx,
     farmer: farmerName,
     business,
-    phone: dev.contactPerson?.phone || '+91 98480 34211',
+    phone: dev.contactPerson?.phone || '',
     village,
     district,
     state,
@@ -475,36 +478,28 @@ export function telemetryToAdminRecord(
     lon: dev.calibratedLongitude || dev.longitude || 81.52,
     pond: dev.name || `Pond ${dev.deviceId}`,
     site: dev.locationName || `${village} · ${district}`,
-    model: 'MNBG-2.0',
-    capacity: '2 HP · Micro-Nano Bubble Aerator',
-    serial: `MNBG-24-${dev.deviceId.replace(/[^0-9]/g, '') || '1001'}`,
+    model: d.specs?.model || 'Not recorded',
+    capacity: d.specs?.capacity || (d.specs?.motorHp ? `${d.specs.motorHp} HP` : 'Not recorded'),
+    serial: d.specs?.serial || 'Not recorded',
     installed: installedDate,
     wEnd: wEndDate,
     wDays: diffDays,
-    amc: diffDays > 0 ? 'warranty' : 'active',
-    amcEnd: fmtDate(wEndDate),
+    amc: diffDays > 0 ? 'warranty' : 'none',
+    amcEnd: isNaN(wEndDate.getTime()) ? 'Not recorded' : fmtDate(wEndDate),
     idle: isRunning ? 0 : 1,
     complaint: isCritical ? 'Low DO Hypoxia Warning' : null,
     status: adminStatus,
     hours: Math.round(dev.totalRunHours || 0),
-    hasDO: dev.doSensorEnabled !== false,
-    hasTemp: dev.waterTemp !== undefined,
+    hasDO: isSensorInstalled(dev, 'do'),
+    hasTemp: isSensorInstalled(dev, 'temp'),
     mode: dev.autoMode
       ? `Auto (DO ${dev.minDoAlert || 5.0} → ${dev.maxDoAlert || 9.0} ppm)`
       : 'Manual (MNBG)',
     fw: dev.firmwareVersion || 'v2.4.1',
-    tech: 'Suresh Varma',
-    installer: 'Oxynity Field Tech',
-    doNow: dev.doLevel >= 0 ? dev.doLevel.toFixed(1) : null,
-    svc: [
-      {
-        dt: installedDate,
-        title: 'Factory Commissioning & Optical Calibration',
-        type: 'Install',
-        by: 'Oxynity Engineering',
-        note: 'Optical DO sensor & 2G cellular telemetry online',
-      },
-    ],
+    tech: d.assignedTech || 'Not assigned',
+    installer: d.installedBy || 'Not recorded',
+    doNow: isSensorInstalled(dev, 'do') && dev.doLevel >= 0 ? dev.doLevel.toFixed(1) : null,
+    svc: [],
     rawTelemetry: dev,
   };
 }

@@ -1,3 +1,5 @@
+import { Capacitor } from '@capacitor/core';
+import { isAdminEmail as isAdminAccount } from '../lib/oxynity';
 import React, { useState, useEffect } from 'react';
 import {
   signInWithEmailAndPassword,
@@ -95,7 +97,7 @@ export const LoginPage: React.FC<LoginPageProps> = ({
       return;
     }
 
-    const isAdminEmail = cleanEmail.toLowerCase().includes('admin');
+    const isAdminEmail = isAdminAccount(cleanEmail);
     const userRole: 'operator' | 'admin' = isAdminEmail ? 'admin' : 'operator';
 
     if (mode === 'signup') {
@@ -123,19 +125,7 @@ export const LoginPage: React.FC<LoginPageProps> = ({
 
     try {
       if (mode === 'signup') {
-        const userCredential = await createUserWithEmailAndPassword(auth, cleanEmail, cleanPassword).catch((e) => {
-          const c = e?.code || '';
-          if (
-            c === 'auth/network-request-failed' ||
-            c === 'auth/operation-not-allowed' ||
-            c === 'auth/admin-restricted-operation' ||
-            e?.message?.includes('PASSWORD_LOGIN_DISABLED')
-          ) {
-            console.warn('Firebase Auth cloud network fallback (Signup):', e);
-            return null;
-          }
-          throw e;
-        });
+        const userCredential = await createUserWithEmailAndPassword(auth, cleanEmail, cleanPassword);
 
         if (userCredential?.user && fullName.trim()) {
           await updateProfile(userCredential.user, {
@@ -157,19 +147,7 @@ export const LoginPage: React.FC<LoginPageProps> = ({
           );
         }, 500);
       } else {
-        const userCredential = await signInWithEmailAndPassword(auth, cleanEmail, cleanPassword).catch((e) => {
-          const c = e?.code || '';
-          if (
-            c === 'auth/network-request-failed' ||
-            c === 'auth/operation-not-allowed' ||
-            c === 'auth/admin-restricted-operation' ||
-            e?.message?.includes('PASSWORD_LOGIN_DISABLED')
-          ) {
-            console.warn('Firebase Auth cloud network fallback (SignIn):', e);
-            return null;
-          }
-          throw e;
-        });
+        const userCredential = await signInWithEmailAndPassword(auth, cleanEmail, cleanPassword);
 
         setSuccessMessage(
           isAdminEmail
@@ -200,6 +178,8 @@ export const LoginPage: React.FC<LoginPageProps> = ({
         msg = 'Password should be at least 6 characters.';
       } else if (code === 'auth/too-many-requests') {
         msg = 'Too many attempts. Reset password or try again later.';
+      } else if (code === 'auth/network-request-failed') {
+        msg = 'No internet connection. Please connect and try again.';
       } else if (err.message) {
         msg = err.message.replace('Firebase: ', '');
       }
@@ -244,6 +224,11 @@ export const LoginPage: React.FC<LoginPageProps> = ({
 
   // Google Sign-In Handler (Uses Firebase Auth Google Provider enabled in project)
   const handleGoogleSignIn = async () => {
+    // Firebase popup sign-in does not work inside the Android app (WebView).
+    if (Capacitor.isNativePlatform()) {
+      setErrorMessage('Google sign-in is not available in the Android app yet. Please sign in with email and password.');
+      return;
+    }
     setIsLoading(true);
     setErrorMessage('');
     setSuccessMessage('');
@@ -251,7 +236,7 @@ export const LoginPage: React.FC<LoginPageProps> = ({
       const result = await signInWithPopup(auth, googleProvider);
       const user = result.user;
       const cleanEmail = (user.email || 'operator@oxynity.com').trim().toLowerCase();
-      const isAdmin = cleanEmail.includes('admin');
+      const isAdmin = isAdminAccount(cleanEmail);
       const role: 'operator' | 'admin' = isAdmin ? 'admin' : 'operator';
       setSuccessMessage(isAdmin ? 'Admin Logged In with Google!' : 'Logged In with Google!');
       setTimeout(() => {

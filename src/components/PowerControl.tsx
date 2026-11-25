@@ -1,3 +1,4 @@
+import { restMinutesFor } from '../lib/oxynity';
 import React, { useState, useEffect, useRef } from 'react';
 import {
   Power,
@@ -21,6 +22,8 @@ interface PowerControlProps {
   onCancelCooldown?: () => void;
   isUpdating?: boolean;
   isOnline?: boolean;
+  /** DO sensor installed on this pond. Without it, Auto (DO) mode is hidden. */
+  doInstalled?: boolean;
 }
 
 export const PowerControl: React.FC<PowerControlProps> = ({
@@ -31,6 +34,7 @@ export const PowerControl: React.FC<PowerControlProps> = ({
   onCancelCooldown,
   isUpdating = false,
   isOnline = true,
+  doInstalled = true,
 }) => {
   const {
     status,
@@ -46,6 +50,7 @@ export const PowerControl: React.FC<PowerControlProps> = ({
   const isCoolingDown = !!device.isCoolingDown;
   const cooldownEnabled = device.cooldownEnabled !== false;
   const [showOfflineModal, setShowOfflineModal] = useState(false);
+  const [isClickLocked, setIsClickLocked] = useState(false);
 
   // ── Session Runtime Tracker & Safe Persistence ──
   // The timer calculates real wall-clock elapsed time from sessionStartedAt
@@ -232,7 +237,7 @@ export const PowerControl: React.FC<PowerControlProps> = ({
   const continuousMins = Math.floor((continuousSecs % 3600) / 60);
 
   // Cooldown countdown formatting (30-min rest)
-  const COOLDOWN_REST_SECS = 30 * 60; // 1,800s
+  const COOLDOWN_REST_SECS = restMinutesFor(device) * 60;
   const cdMins = Math.floor(cooldownSecsLeft / 60);
   const cdSecs = cooldownSecsLeft % 60;
   const cooldownFormatted = `${cdMins}:${cdSecs.toString().padStart(2, '0')}`;
@@ -252,7 +257,13 @@ export const PowerControl: React.FC<PowerControlProps> = ({
   const r2ProgressPercent = Math.min(100, Math.round(((RELAY_2_DELAY_SECS - remainingR2Secs) / RELAY_2_DELAY_SECS) * 100));
 
   const handlePowerClick = () => {
-    if (isUpdating) return;
+    if (isUpdating || isClickLocked) return;
+
+    // Lock power button for 2.5 seconds to prevent accidental double-clicks or touch bounce
+    setIsClickLocked(true);
+    setTimeout(() => {
+      setIsClickLocked(false);
+    }, 2500);
 
     // If currently in cooldown: Clicking power button provides immediate manual override!
     if (isCoolingDown) {
@@ -304,7 +315,7 @@ export const PowerControl: React.FC<PowerControlProps> = ({
         {/* Animated 144px Circular Button */}
         <button
           type="button"
-          disabled={isUpdating}
+          disabled={isUpdating || isClickLocked}
           onClick={handlePowerClick}
           aria-label={isRunning ? 'Turn MNBG off' : 'Turn MNBG on'}
           className="relative block w-36 h-36 rounded-full focus-visible:outline-hidden focus-visible:ring-4 focus-visible:ring-[#19C3D1] cursor-pointer transition-transform active:scale-95 disabled:opacity-60"
@@ -491,7 +502,7 @@ export const PowerControl: React.FC<PowerControlProps> = ({
           {isCoolingDown ? (
             <div className="flex items-center gap-1.5 text-sky-600 dark:text-sky-400 font-bold text-xs">
               <Snowflake className="w-3.5 h-3.5 animate-spin" style={{ animationDuration: '6s' }} />
-              <span>Resting for 30 mins · {cooldownFormatted} remaining</span>
+              <span>Resting for {Math.round(COOLDOWN_REST_SECS / 60)} mins · {cooldownFormatted} remaining</span>
             </div>
           ) : isRunning ? (
             <>
@@ -551,7 +562,7 @@ export const PowerControl: React.FC<PowerControlProps> = ({
               </div>
 
               <p className="text-[10px] text-sky-800 dark:text-sky-300/90 font-medium leading-relaxed">
-                Ran 6 hours continuously. Taking a 30-minute rest to protect motor windings and pump bearings. Machine will auto-restart when timer reaches 0:00.
+                Ran 6 hours continuously. Taking a {Math.round(COOLDOWN_REST_SECS / 60)}-minute rest to protect motor windings and pump bearings. Machine will auto-restart when timer reaches 0:00.
               </p>
 
               {/* Action Buttons: Resume Override or Cancel */}
@@ -616,7 +627,7 @@ export const PowerControl: React.FC<PowerControlProps> = ({
                   <div className="flex items-center gap-1.5">
                     <Zap className="w-4 h-4 text-emerald-600 dark:text-emerald-400 fill-emerald-500" />
                     <span className="text-xs font-black text-emerald-900 dark:text-emerald-200">
-                      Second relay is turn on now
+                      Second relay is ON
                     </span>
                   </div>
                   <span className="text-[10px] font-extrabold px-2 py-0.5 rounded-full bg-emerald-100 dark:bg-emerald-900 text-emerald-800 dark:text-emerald-200 border border-emerald-300 dark:border-emerald-600 flex items-center gap-1">
@@ -632,6 +643,7 @@ export const PowerControl: React.FC<PowerControlProps> = ({
           </div>
         )}
 
+        {doInstalled && (<>
         {/* Auto DO Threshold Text */}
         <div className="text-xs font-medium text-[#5B7479] dark:text-[#9DB8BD] mt-2 mb-3">
           {autoMode
@@ -666,6 +678,7 @@ export const PowerControl: React.FC<PowerControlProps> = ({
             Auto · DO
           </button>
         </div>
+        </>)}
       </div>
 
       {/* ── Offline Instruction Popup Modal ── */}

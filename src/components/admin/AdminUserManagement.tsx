@@ -31,11 +31,26 @@ export const AdminUserManagement: React.FC<AdminUserManagementProps> = ({
   onUsersUpdated,
 }) => {
   const [users, setUsers] = useState<AdminUser[]>(() => {
+    // Old or damaged saved data must never crash the screen: keep only valid users and fill missing fields.
+    const clean = (list: any): AdminUser[] =>
+      (Array.isArray(list) ? list : [])
+        .filter((u) => u && typeof u === 'object')
+        .map((u) => ({
+          ...u,
+          id: String(u.id ?? `usr-${Math.random().toString(36).slice(2, 8)}`),
+          name: String(u.name ?? ''),
+          email: String(u.email ?? ''),
+          phone: String(u.phone ?? ''),
+          role: u.role || 'operator',
+          status: u.status || 'active',
+          assignedPondIds: Array.isArray(u.assignedPondIds) ? u.assignedPondIds.map(String) : [],
+          createdAt: u.createdAt || new Date().toISOString(),
+        }));
     try {
       const saved = localStorage.getItem('oxynity_admin_users');
-      if (saved) return JSON.parse(saved);
+      if (saved) return clean(JSON.parse(saved));
     } catch {}
-    return initialUsers;
+    return clean(initialUsers);
   });
 
   const [searchQuery, setSearchQuery] = useState('');

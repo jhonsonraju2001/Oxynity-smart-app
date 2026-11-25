@@ -1,3 +1,5 @@
+// NOTE: not used anywhere (no screen opens it). Pond location is set by admin in Sensor setup & calibration.
+// Kept for reference; safe to delete.
 import React, { useState } from 'react';
 import { DeviceTelemetry, PondContact } from '../types/iot';
 import {
@@ -490,7 +492,7 @@ export const PondDetailModal: React.FC<PondDetailModalProps> = ({
                     <MapPin className="w-5 h-5 text-sky-600 shrink-0 mt-0.5" />
                     <div>
                       <h4 className="text-sm font-black text-slate-900 leading-snug">{device.locationName}</h4>
-                      <span className="text-[11px] text-slate-500 mt-0.5 block">{device.locationSource || 'SIM900A GPRS Cell LBS'}</span>
+                      <span className="text-[11px] text-slate-500 mt-0.5 block">{device.locationSource || 'SIMCom A7672S 4G LTE'}</span>
                     </div>
                   </div>
 

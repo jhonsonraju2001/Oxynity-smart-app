@@ -9,9 +9,8 @@ const config: CapacitorConfig = {
   },
   plugins: {
     LocalNotifications: {
-      smallIcon: 'ic_stat_icon_config_sample',
+      // smallIcon / sound removed: those files are not in the app (add res/drawable/ic_stat_*.png and res/raw/beep.wav to use them)
       iconColor: '#0284C7',
-      sound: 'beep.wav',
     },
   },
 };

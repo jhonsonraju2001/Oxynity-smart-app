@@ -56,25 +56,30 @@ export const OxynityLiveLogo: React.FC<{ size?: number; className?: string }> = 
 
 export const OxynitySplashScreen: React.FC<{ onDismiss: () => void }> = ({ onDismiss }) => {
   const [fading, setFading] = useState(false);
+  // The parent re-renders every second (live data). Keep the latest callback in a ref so the
+  // 2.8 s timer is started once and is not restarted on every render (it used to never close).
+  const dismissRef = React.useRef(onDismiss);
+  dismissRef.current = onDismiss;
+  const done = React.useRef(false);
+  const close = () => {
+    if (done.current) return;
+    done.current = true;
+    setFading(true);
+    setTimeout(() => dismissRef.current(), 500);
+  };
 
   useEffect(() => {
-    const timer = setTimeout(() => {
-      setFading(true);
-      setTimeout(onDismiss, 500);
-    }, 2800);
+    const timer = setTimeout(close, 2800);
     return () => clearTimeout(timer);
-  }, [onDismiss]);
+  }, []);
 
-  const handleClick = () => {
-    setFading(true);
-    setTimeout(onDismiss, 500);
-  };
+  const handleClick = close;
 
   return (
     <div
       id="splash"
       onClick={handleClick}
-      className={`fixed inset-0 z-50 flex flex-col items-center justify-center gap-6 cursor-pointer transition-opacity duration-500 ${
+      className={`fixed inset-0 z-[5000] flex flex-col items-center justify-center gap-6 cursor-pointer transition-opacity duration-500 ${
         fading ? 'opacity-0 pointer-events-none' : 'opacity-100'
       }`}
       style={{

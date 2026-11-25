@@ -26,10 +26,32 @@
  *    the BeaconDB Cell Geolocation API and saves them to Firestore.
  *  - Your phone app map tracks your live moving location dynamically!
  * ==============================================================================
+ *
+ * FIRMWARE v1.7 (Nov 2026) - changes:
+ *  - Schedules, the 6-hour run / rest cycle and run hours now run ON THE MACHINE
+ *    (oxynity_scheduler.h). They work with every phone closed and with no network,
+ *    once the clock has been set once from the server.
+ *  - Settings (schedules, rest time) and the correct time come from the Cloudflare
+ *    worker reply ("cfg", "t") and are kept in NVS, so a power cut loses nothing.
+ *  - Every start/stop the machine decides itself (schedule, rest, panel buttons) is
+ *    reported once ("runEvent") and saved in the app's run history.
+ *  - Heartbeat every 30 s instead of 6 s (5x fewer Firestore writes), immediate sync
+ *    when the relay changes.
+ *  - gprsLocationFixed is true only for the modem's own location fix; the server's
+ *    reply and the 16.5787, 82.0061 placeholder are never sent back as a position.
+ *  - Ready for pH / ORP / temperature / salinity probes (readExtraSensors()).
+ *
+ *  Put oxynity_scheduler.h in the same folder as this .ino.
+ *  TEST ON THE DEMO UNIT BEFORE FLASHING CUSTOMER MACHINES.
+ * ==============================================================================
  */
 
 #include <HardwareSerial.h>
 #include <Preferences.h>
+#include <math.h>
+#include "oxynity_scheduler.h"
+
+#define FW_VERSION "1.7"
 
 // ==============================================================================
 // 1. PIN DEFINITIONS (SIM900A ONLY ON GPIO 18 & 19)
@@ -81,7 +103,10 @@ unsigned long lastStopDebounceTime  = 0;
 #define DEVICE_ID           "OXY-ESP32-002"
 
 // Timing Intervals
-const unsigned long CYCLE_INTERVAL_MS    =  6000; // Heartbeat & Telemetry every 6s
+const unsigned long CYCLE_INTERVAL_MS    = 30000; // Heartbeat & telemetry every 30 s (was 6 s: used up the Firestore quota)
+const unsigned long MIN_SYNC_GAP_MS      =  5000; // an immediate sync (relay changed) never repeats faster than this
+const unsigned long SCHED_TICK_MS        = 10000; // scheduler check every 10 s
+const unsigned long NVS_SAVE_RUNNING_MS  = 300000; // save run hours every 5 min while running
 const unsigned long LOCATION_INTERVAL_MS = 30000; // Query GPRS cell coordinates every 30s
 
 // ==============================================================================
@@ -115,6 +140,35 @@ String        carrierMnc           = "4";
 bool          isMoving             = false;
 String        lastKnownTower       = "";
 String        pendingButtonTrigger = ""; // Set to "START" or "STOP" on physical button press
+
+// Own location fix from the modem (AT+CIPGSMLOC). Only this is sent as the machine position.
+bool          ownFix               = false;
+float         ownLatitude          = 0.0f;
+float         ownLongitude         = 0.0f;
+
+// ---- v1.7 on-device scheduler -------------------------------------------------
+OxyConfig     oxyCfg               = {false, true, 30, 0, {}};
+OxyState      oxy;
+String        oxyCfgText           = "";
+bool          runSeeded            = false;   // lifetime run hours taken over from the cloud once
+uint32_t      epochBase            = 0;       // server time (unix seconds) ...
+unsigned long epochBaseMs          = 0;       // ... at this millis()
+bool          timeValid            = false;
+unsigned long lastSchedTickMs      = 0;
+unsigned long lastNvsSaveMs        = 0;
+unsigned long runStartedMs         = 0;
+bool          forceSync            = false;
+// one start/stop the machine decided itself, sent with the next sync
+String        pendTrigger          = "";      // SCHEDULE / REST
+String        pendRunEvent         = "";      // START / STOP
+String        pendRunReason        = "";
+long          pendDurationSec      = -1;
+
+// Extra probes (NAN = not connected). See readExtraSensors().
+float         waterTempC           = NAN;
+float         phValue              = NAN;
+float         orpMv                = NAN;
+float         salinityPpt          = NAN;
 
 unsigned long totalSessionSecs     = 0;
 unsigned long lastStateChangeMs    = 0;
@@ -155,6 +209,7 @@ void startGeneratorSequence(const char* triggerSource) {
   setRelay2(false);
   relay2Waiting    = true;
   relay1StartTime  = millis();
+  runStartedMs     = millis();
 
   Serial.println(F("[Relay 1] ⚡ BUBBLE GENERATOR -> TURNED ON [IMMEDIATE]"));
   Serial.printf("[Relay 2] ⏳ Timer active: Secondary Aerator will start in %lu seconds (2 mins)...\n\n",
@@ -170,6 +225,7 @@ void stopGeneratorSequence(const char* triggerSource) {
   setRelay2(false);
   relay2Waiting   = false;
   relay1StartTime = 0;
+  runStartedMs    = 0;
 
   Serial.println(F("[Relay 1] 🛑 TURNED OFF"));
   Serial.println(F("[Relay 2] 🛑 TURNED OFF"));
@@ -190,7 +246,12 @@ void handleManualButtons() {
       if (startBtnState == LOW) {
         Serial.println(F("[Button] 🟢 GREEN Push Button Pressed!"));
         pendingButtonTrigger = "START";
-        startGeneratorSequence("Manual Green Button");
+        if (!generatorState) {
+          startGeneratorSequence("Manual Green Button");
+          pendRunEvent = "START"; pendRunReason = "Green button"; pendDurationSec = -1;
+        }
+        oxyManual(oxy, true);   // farmer's choice holds until the next schedule start/stop time
+        forceSync = true;
       }
     }
   }
@@ -208,7 +269,13 @@ void handleManualButtons() {
       if (isRedPressed) {
         Serial.println(F("[Button] 🔴 RED Push Button Pressed!"));
         pendingButtonTrigger = "STOP";
+        if (generatorState) {
+          pendRunEvent = "STOP"; pendRunReason = "Red button";
+          pendDurationSec = runStartedMs > 0 ? (long)((millis() - runStartedMs) / 1000UL) : -1;
+        }
         stopGeneratorSequence("Manual Red Button");
+        oxyManual(oxy, false);
+        forceSync = true;
       }
     }
   }
@@ -226,6 +293,118 @@ void handleSequenceTimer() {
       Serial.println(F("============================================================\n"));
     }
   }
+}
+
+// ==============================================================================
+// v1.7 SCHEDULER GLUE: clock, NVS, run events
+// ==============================================================================
+// Unix time once the server has sent it; before that, seconds since power-on, so a 6 h rest still
+// ends on time without a clock (schedules themselves wait for the real clock).
+uint32_t nowEpoch() {
+  if (!timeValid) return (uint32_t)(millis() / 1000UL);
+  return epochBase + (uint32_t)((millis() - epochBaseMs) / 1000UL);
+}
+
+uint16_t nowMinIST() {
+  return (uint16_t)(((nowEpoch() + 19800UL) / 60UL) % 1440UL); // IST = UTC + 5:30
+}
+
+void saveOxy() {
+  Preferences p;
+  p.begin("oxy", false);
+  p.putBytes("st", &oxy, sizeof(oxy));
+  p.putBool("seeded", runSeeded);
+  p.end();
+  oxy.dirty = false;
+  lastNvsSaveMs = millis();
+}
+
+void loadOxy() {
+  oxyInit(oxy);
+  Preferences p;
+  p.begin("oxy", true);
+  if (p.getBytesLength("st") == sizeof(oxy)) p.getBytes("st", &oxy, sizeof(oxy));
+  runSeeded = p.getBool("seeded", false);
+  oxyCfgText = p.getString("cfg", "");
+  p.end();
+  if (oxyCfgText.length()) oxyParseConfig(oxyCfgText.c_str(), oxyCfg);
+  // After a reboot the relay is OFF; the catch-up rule restarts it if a schedule is open.
+  // A rest in progress is kept (restEndsEpoch) and finishes on time once the clock is set.
+  oxy.relayOn = false;
+  oxy.lastInWindow = false;
+  oxy.manualHold = false;
+  Serial.printf("[Scheduler] Loaded: %u schedules, schedule %s, lifetime %.1f h, resting %s\n",
+                oxyCfg.count, oxyCfg.scheduleEnabled ? "ON" : "OFF", oxy.totalRunSec / 3600.0, oxy.resting ? "yes" : "no");
+}
+
+// Remember a start/stop the machine decided itself; it is sent once with the next sync.
+void noteRunEvent(bool started, const char* trigger, const char* reason) {
+  pendTrigger     = trigger;
+  pendRunEvent    = started ? "START" : "STOP";
+  pendRunReason   = reason;
+  pendDurationSec = (!started && runStartedMs > 0) ? (long)((millis() - runStartedMs) / 1000UL) : -1;
+  forceSync       = true;
+}
+
+void schedulerTick() {
+  unsigned long nowMs = millis();
+  if (lastSchedTickMs == 0) lastSchedTickMs = nowMs;
+  if (nowMs - lastSchedTickMs < SCHED_TICK_MS) return;
+  uint32_t elapsed = (nowMs - lastSchedTickMs) / 1000UL;
+  lastSchedTickMs = nowMs;
+
+  oxy.relayOn = generatorState; // buttons / cloud commands may have changed it
+  OxyEvent ev = oxyTick(oxyCfg, oxy, nowEpoch(), timeValid ? nowMinIST() : 0, elapsed, timeValid);
+
+  if (oxy.relayOn && !generatorState) {
+    startGeneratorSequence("Scheduler");
+    if (ev == OXY_REST_END_RESUME) noteRunEvent(true, "REST", "Rest finished");
+    else                           noteRunEvent(true, "SCHEDULE", "Schedule start");
+  } else if (!oxy.relayOn && generatorState) {
+    bool rest = (ev == OXY_REST_START);
+    noteRunEvent(false, rest ? "REST" : "SCHEDULE", rest ? "6 h rest" : "Schedule stop");
+    stopGeneratorSequence(rest ? "6-hour rest" : "Schedule stop time");
+  } else if (ev == OXY_REST_END_STAY_OFF || ev == OXY_REST_CANCELLED_BY_STOP_TIME) {
+    forceSync = true; // tell the app the rest is over
+  }
+
+  if (oxy.dirty || (generatorState && nowMs - lastNvsSaveMs >= NVS_SAVE_RUNNING_MS)) saveOxy();
+}
+
+// Read "key":"text" or "key":number from the worker reply.
+String replyString(const String& reply, const char* key) {
+  String k = String("\"") + key + "\":\"";
+  int i = reply.indexOf(k);
+  if (i < 0) return "";
+  i += k.length();
+  int j = reply.indexOf('"', i);
+  return j > i ? reply.substring(i, j) : "";
+}
+
+double replyNumber(const String& reply, const char* key, double fallback) {
+  String k = String("\"") + key + "\":";
+  int i = reply.indexOf(k);
+  if (i < 0) return fallback;
+  i += k.length();
+  int j = i;
+  while (j < (int)reply.length() && (isDigit(reply[j]) || reply[j] == '.' || reply[j] == '-')) j++;
+  return j > i ? reply.substring(i, j).toDouble() : fallback;
+}
+
+// ==============================================================================
+// EXTRA PROBES (pH, ORP, water temperature, salinity)
+// ==============================================================================
+// Not fitted yet. When probes are connected, read them here and set the values
+// (leave NAN when a probe is missing). Send RAW values: calibration is done in the
+// app (Admin > Sensor setup > step 3). The app shows a probe only when the admin
+// marks it installed.
+//   Example for an RS485 Modbus probe: use a MAX485 module on a free UART and the
+//   register map from the probe datasheet.
+void readExtraSensors() {
+  // waterTempC  = ...;
+  // phValue     = ...;
+  // orpMv       = ...;
+  // salinityPpt = ...;
 }
 
 // ==============================================================================
@@ -458,6 +637,9 @@ void updateServingCellTower() {
             if (lat != 0.0f && lng != 0.0f && lat >= -90.0f && lat <= 90.0f && lng >= -180.0f && lng <= 180.0f) {
               currentLatitude   = lat;
               currentLongitude  = lng;
+              ownLatitude       = lat;
+              ownLongitude      = lng;
+              ownFix            = true;
               gprsLocationFixed = true;
               locationLabel     = isMoving ? "SIM900A Moving Fix" : "SIM900A Live Cell Fix";
               Serial.printf("[SIM900A] ✅ Carrier LBS Fix: Lat: %.6f, Lng: %.6f\n", lat, lng);
@@ -648,6 +830,7 @@ bool initGPRS() {
 // ==============================================================================
 void syncPondWithCloud() {
   readDoSensor();
+  readExtraSensors();
   updateSignalQuality();
 
   // Read current physical cell tower before sending packet (captures travel!)
@@ -659,10 +842,23 @@ void syncPondWithCloud() {
   json += "\"doLevel\":" + String(currentDoLevel, 2) + ",";
   json += "\"doSensorConnected\":" + String(doSensorConnected ? "true" : "false") + ",";
   json += "\"gprsSignal\":" + String(gprsSignalPercent) + ",";
-  json += "\"latitude\":" + String(currentLatitude, 6) + ",";
-  json += "\"longitude\":" + String(currentLongitude, 6) + ",";
-  json += "\"locationName\":\"" + locationLabel + "\",";
-  json += "\"gprsLocationFixed\":" + String(gprsLocationFixed ? "true" : "false") + ",";
+  if (ownFix) { // only the modem's own fix; never the server's echo or the placeholder
+    json += "\"latitude\":" + String(ownLatitude, 6) + ",";
+    json += "\"longitude\":" + String(ownLongitude, 6) + ",";
+    json += "\"locationName\":\"" + locationLabel + "\",";
+  }
+  json += "\"gprsLocationFixed\":" + String(ownFix ? "true" : "false") + ",";
+  if (!isnan(waterTempC))  json += "\"waterTemp\":" + String(waterTempC, 2) + ",";
+  if (!isnan(phValue))     json += "\"phLevel\":" + String(phValue, 3) + ",";
+  if (!isnan(orpMv))       json += "\"orpLevel\":" + String(orpMv, 1) + ",";
+  if (!isnan(salinityPpt)) json += "\"salinity\":" + String(salinityPpt, 2) + ",";
+  // v1.7 scheduler state (the app shows it and stops running its own timers)
+  json += "\"firmwareScheduler\":true,";
+  json += "\"fwVersion\":\"" + String(FW_VERSION) + "\",";
+  json += "\"isCoolingDown\":" + String(oxy.resting ? "true" : "false") + ",";
+  json += "\"cooldownEndsAt\":" + String(timeValid ? (unsigned long)oxy.restEndsEpoch : 0UL) + ",";
+  json += "\"continuousRunSeconds\":" + String((unsigned long)oxy.continuousSec) + ",";
+  if (runSeeded) json += "\"totalRunHours\":" + String(oxy.totalRunSec / 3600.0, 3) + ",";
   if (cellLac.length() > 0) json += "\"cellLac\":\"" + cellLac + "\",";
   if (cellId.length() > 0)  json += "\"cellId\":\"" + cellId + "\",";
   json += "\"mcc\":\"" + carrierMcc + "\",";
@@ -676,7 +872,15 @@ void syncPondWithCloud() {
     json += ",\"manualButtonTrigger\":\"" + pendingButtonTrigger + "\"";
     json += ",\"status\":\"" + String(generatorState ? "ON" : "OFF") + "\"";
     json += ",\"status2\":\"" + String(relay2State ? "ON" : "OFF") + "\"";
-    pendingButtonTrigger = ""; // Reset after dispatching
+  } else if (pendTrigger.length() > 0) {
+    // start/stop decided by the scheduler or the 6 h rest
+    json += ",\"triggerSource\":\"" + pendTrigger + "\"";
+    json += ",\"status\":\"" + String(generatorState ? "ON" : "OFF") + "\"";
+    json += ",\"status2\":\"" + String(relay2State ? "ON" : "OFF") + "\"";
+  }
+  if (pendRunEvent.length() > 0) {
+    json += ",\"runEvent\":\"" + pendRunEvent + "\",\"runReason\":\"" + pendRunReason + "\"";
+    if (pendDurationSec >= 0) json += ",\"durationSec\":" + String(pendDurationSec);
   }
 
   json += "}";
@@ -742,6 +946,47 @@ void syncPondWithCloud() {
     Serial.printf("[Cloud Sync] ✅ Success! Server Reply: %s\n", reply.c_str());
     failedSyncCount = 0;
 
+    // delivered: clear the one-time events
+    pendingButtonTrigger = "";
+    pendTrigger = ""; pendRunEvent = ""; pendRunReason = ""; pendDurationSec = -1;
+
+    // v1.7: server clock
+    double t = replyNumber(reply, "t", 0);
+    if (t > 1700000000.0) {
+      epochBase = (uint32_t)t;
+      epochBaseMs = millis();
+      if (!timeValid) {
+        // a rest started before the clock was known used seconds-since-power-on: move it to real time
+        if (oxy.resting && oxy.restEndsEpoch < 1700000000UL) {
+          uint32_t left = oxy.restEndsEpoch > (uint32_t)(millis() / 1000UL) ? oxy.restEndsEpoch - (uint32_t)(millis() / 1000UL) : 0;
+          oxy.restEndsEpoch = (uint32_t)t + left;
+          oxy.dirty = true;
+        }
+        timeValid = true;
+        Serial.printf("[Scheduler] 🕒 Clock set from server (IST minute of day %u)\n", nowMinIST());
+      }
+      timeValid = true;
+    }
+    // v1.7: schedule settings
+    String cfg = replyString(reply, "cfg");
+    if (cfg.length() && cfg != oxyCfgText) {
+      if (oxyParseConfig(cfg.c_str(), oxyCfg)) {
+        oxyCfgText = cfg;
+        Preferences p; p.begin("oxy", false); p.putString("cfg", cfg); p.end();
+        Serial.printf("[Scheduler] ⚙️ New settings: %s\n", cfg.c_str());
+      }
+    }
+    // v1.7: take over lifetime run hours from the cloud once
+    if (!runSeeded) {
+      double trh = replyNumber(reply, "trh", -1);
+      if (trh >= 0) {
+        uint32_t cloudSec = (uint32_t)(trh * 3600.0);
+        if (cloudSec > oxy.totalRunSec) oxy.totalRunSec = cloudSec;
+        runSeeded = true;
+        saveOxy();
+      }
+    }
+
     // Check if server cleared movement (e.g. newly calibrated or stationary)
     if (reply.indexOf("\"isMoving\":false") != -1) {
       isMoving = false;
@@ -758,9 +1003,9 @@ void syncPondWithCloud() {
         float rLat = reply.substring(latIdx + 6, commaLat).toFloat();
         float rLng = reply.substring(lngIdx + 6, commaLng).toFloat();
         if (rLat != 0.0f && rLng != 0.0f) {
+          // shown in the serial log only; NOT sent back as the machine's own position
           currentLatitude = rLat;
           currentLongitude = rLng;
-          gprsLocationFixed = true;
           Serial.printf("[Cloud Sync] 📍 Updated Live Coordinates: %.6f, %.6f\n", currentLatitude, currentLongitude);
         }
       }
@@ -770,10 +1015,12 @@ void syncPondWithCloud() {
     if (reply.indexOf("\"r1\":\"ON\"") != -1 || reply.indexOf("\"status\":\"ON\"") != -1) {
       if (!generatorState) {
         startGeneratorSequence("Cloud Bridge Command");
+        oxyManual(oxy, true);   // app ON (or Auto DO): holds until the next schedule boundary
       }
     } else if (reply.indexOf("\"r1\":\"OFF\"") != -1 || reply.indexOf("\"status\":\"OFF\"") != -1) {
       if (generatorState) {
         stopGeneratorSequence("Cloud Bridge Command");
+        oxyManual(oxy, false);
       }
     }
   } else {
@@ -824,6 +1071,7 @@ void setup() {
 
   analogSetAttenuation(ADC_11db);
   loadDoCalibration();
+  loadOxy();
 
   autoBaudSIM900A();
   initGPRS();
@@ -842,15 +1090,19 @@ void loop() {
     totalSessionSecs = (now - lastStateChangeMs) / 1000UL;
   }
 
+  // 3. On-device schedules, 6 h rest and run hours (works without network once the clock is set)
+  schedulerTick();
+
   if (!gprsConnected) {
     initGPRS();
     delay(2000);
     return;
   }
 
-  // 3. Sync telemetry, relay commands, and live tower location every 6 seconds
-  if (now - lastCycleMs >= CYCLE_INTERVAL_MS) {
+  // 4. Sync telemetry, relay commands and location every 30 s, or right away when the relay changed
+  if (now - lastCycleMs >= CYCLE_INTERVAL_MS || (forceSync && now - lastCycleMs >= MIN_SYNC_GAP_MS)) {
     lastCycleMs = now;
+    forceSync = false;
     syncPondWithCloud();
   }
 

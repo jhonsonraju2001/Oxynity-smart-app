@@ -1,3 +1,5 @@
+import { CropReportCard } from './CropReportCard';
+import { powerUse } from '../lib/oxynity';
 import React, { useState } from 'react';
 import { Download, Clock, Waves, RotateCw, Calendar, Check, FileSpreadsheet, Activity, ChevronDown, FileText } from 'lucide-react';
 import { DeviceTelemetry, TelemetryPoint, EnabledSensors } from '../types/iot';
@@ -11,6 +13,7 @@ interface ReportsViewProps {
   userName?: string;
   sensorsEnabled?: EnabledSensors;
   tempUnit?: 'C' | 'F';
+  onSaveCropDates?: (from: string, to: string) => void;
 }
 
 export type ReportPeriod = 'daily' | 'weekly' | 'monthly';
@@ -47,6 +50,7 @@ export const ReportsView: React.FC<ReportsViewProps> = ({
   userName = 'Operator',
   sensorsEnabled,
   tempUnit = 'C',
+  onSaveCropDates,
 }) => {
   const [period, setPeriod] = useState<ReportPeriod>('daily');
   const [isExporting, setIsExporting] = useState(false);
@@ -170,8 +174,8 @@ export const ReportsView: React.FC<ReportsViewProps> = ({
         cycles: Math.max(totalStarts, totalStops, totalStarts > 0 ? 1 : 0),
         starts: totalStarts,
         stops: totalStops,
-        avgDo: Number((curDo * 0.98).toFixed(1)),
-        avgTemp: Number((curTemp * 0.99).toFixed(1)),
+        avgDo: Number(curDo.toFixed(1)),
+        avgTemp: Number(curTemp.toFixed(1)),
         avgPh: Number(curPh.toFixed(1)),
       };
     }
@@ -216,7 +220,7 @@ export const ReportsView: React.FC<ReportsViewProps> = ({
       cycles: Math.max(totalStarts, totalStops, totalStarts > 0 ? 1 : 0),
       starts: totalStarts,
       stops: totalStops,
-      avgDo: Number((curDo * 1.02).toFixed(1)),
+      avgDo: Number(curDo.toFixed(1)),
       avgTemp: Number(curTemp.toFixed(1)),
       avgPh: Number(curPh.toFixed(1)),
     };
@@ -260,28 +264,20 @@ export const ReportsView: React.FC<ReportsViewProps> = ({
     const periodLogs = getLogsForPeriod(targetPeriod);
     const pStats = getPeriodStats(targetPeriod);
 
-    // Build sensor records (combining telemetry history and current readings)
-    const sensorRows: string[] = [];
-    if (telemetryHistory.length > 0) {
-      telemetryHistory.forEach((t) => {
-        sensorRows.push(
-          `"${t.timestamp}","${t.timeLabel}",${t.doLevel.toFixed(2)},${(device.phLevel ?? 7.6).toFixed(1)},${Math.round(device.orpLevel ?? 285)},${(t.waterTemp ?? device.waterTemp ?? 28.4).toFixed(1)},${(device.salinity ?? 15.0).toFixed(1)},"${t.status}"`
-        );
-      });
-    } else {
-      // Generate synthetic 12-interval telemetry points for the period
-      const intervalHours = targetPeriod === 'daily' ? 2 : targetPeriod === 'weekly' ? 12 : 48;
-      for (let i = 12; i >= 0; i--) {
-        const pointTime = new Date(now.getTime() - i * intervalHours * 3600 * 1000);
-        const iso = pointTime.toISOString();
-        const timeStr = pointTime.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-        const jitterDo = Math.max(3.0, (device.doLevel >= 0 ? device.doLevel : 7.2) + Math.sin(i) * 0.4);
-        const jitterTemp = (device.waterTemp ?? 28.4) + Math.cos(i) * 0.3;
-        sensorRows.push(
-          `"${iso}","${timeStr}",${jitterDo.toFixed(2)},${(device.phLevel ?? 7.6).toFixed(1)},${Math.round(device.orpLevel ?? 285)},${jitterTemp.toFixed(1)},${(device.salinity ?? 15.0).toFixed(1)},"${device.status}"`
-        );
-      }
-    }
+    // Sensor readings: only real recorded points, only for installed sensors (no made-up values)
+    const sen = sensorsEnabled || ({} as any);
+    const anySensor = !!(sen.do || sen.ph || sen.orp || sen.temp || sen.sal);
+    const sensorHeader = ['Timestamp', 'Time Label',
+      ...(sen.do ? ['Dissolved Oxygen (mg/L)'] : []), ...(sen.ph ? ['pH Level'] : []), ...(sen.orp ? ['ORP (mV)'] : []),
+      ...(sen.temp ? ['Water Temp (°C)'] : []), ...(sen.sal ? ['Salinity (ppt)'] : []), 'Machine Status'].join(',');
+    const num = (v: any, d = 1) => (typeof v === 'number' && isFinite(v) ? v.toFixed(d) : '');
+    const sensorRows: string[] = telemetryHistory.map((t) =>
+      [`"${t.timestamp}"`, `"${t.timeLabel}"`,
+        ...(sen.do ? [num(t.doLevel, 2)] : []), ...(sen.ph ? [num(device.phLevel)] : []), ...(sen.orp ? [num(device.orpLevel, 0)] : []),
+        ...(sen.temp ? [num(t.waterTemp ?? device.waterTemp)] : []), ...(sen.sal ? [num(device.salinity)] : []), `"${t.status}"`].join(',')
+    );
+    const latest = (on: boolean, v: any, unit: string, d = 1) =>
+      !on ? 'Sensor not installed' : typeof v === 'number' && isFinite(v) && v >= 0 ? `${v.toFixed(d)}${unit}` : 'No reading';
 
     const csvLines = [
       '========================================================================',
@@ -302,14 +298,15 @@ export const ReportsView: React.FC<ReportsViewProps> = ({
       '------------------------------------------------------------------------',
       'Metric,Value',
       `Period Run Hours,${pStats.sumHours.toFixed(1)} hrs`,
+      `Estimated Power Used,${powerUse(device, pStats.sumHours).kw ? powerUse(device, pStats.sumHours).kwh.toFixed(1) + ' kWh (units)' : 'Machine load not set'}`,
       `Total Machine Cycles,${pStats.cycles}`,
       `Total Starts,${pStats.starts}`,
       `Total Stops,${pStats.stops}`,
-      `Average Dissolved Oxygen,${pStats.avgDo.toFixed(1)} mg/L (ppm)`,
-      `Average Water Temperature,${pStats.avgTemp.toFixed(1)} °C`,
-      `Average pH Level,${pStats.avgPh.toFixed(1)}`,
-      `Average ORP,${Math.round(device.orpLevel ?? 285)} mV`,
-      `Average Salinity,${(device.salinity ?? 15.0).toFixed(1)} ppt`,
+      `Latest Dissolved Oxygen,${latest(!!sen.do, device.doLevel, ' mg/L (ppm)')}`,
+      `Latest Water Temperature,${latest(!!sen.temp, device.waterTemp, ' °C')}`,
+      `Latest pH Level,${latest(!!sen.ph, device.phLevel, '')}`,
+      `Latest ORP,${latest(!!sen.orp, device.orpLevel, ' mV', 0)}`,
+      `Latest Salinity,${latest(!!sen.sal, device.salinity, ' ppt')}`,
       '',
       '------------------------------------------------------------------------',
       `2. MACHINE START / STOP SEQUENCE LOG (${periodLabel})`,
@@ -317,14 +314,17 @@ export const ReportsView: React.FC<ReportsViewProps> = ({
       'Log ID,Timestamp,Date,Time,Action,Trigger Source,Session Duration,Operator,DO Level (mg/L),Water Temp (°C)',
       ...periodLogs.map(
         (l) =>
-          `"${l.id}","${l.timestamp}","${l.formattedDate}","${l.formattedTime}","${l.action}","${(l.triggerSource || '').replace(/"/g, '""')}","${l.sessionDuration || 'N/A'}","${(l.operator || 'System').replace(/"/g, '""')}",${l.doLevel.toFixed(1)},${(l.waterTemp ?? 28.0).toFixed(1)}`
+          `"${l.id}","${l.timestamp}","${l.formattedDate}","${l.formattedTime}","${l.action}","${(l.triggerSource || '').replace(/"/g, '""')}","${l.sessionDuration || 'N/A'}","${(l.operator || 'System').replace(/"/g, '""')}",${typeof l.doLevel === 'number' && sen.do ? l.doLevel.toFixed(1) : ''},${typeof l.waterTemp === 'number' && sen.temp ? l.waterTemp.toFixed(1) : ''}`
       ),
       '',
       '------------------------------------------------------------------------',
-      `3. WATER QUALITY SENSOR TELEMETRY LOGS (${periodLabel})`,
+      `3. WATER QUALITY SENSOR READINGS (${periodLabel})`,
       '------------------------------------------------------------------------',
-      'Timestamp,Time Label,Dissolved Oxygen (mg/L),pH Level,ORP (mV),Water Temp (°C),Salinity (ppt),Machine Status',
-      ...sensorRows,
+      ...(!anySensor
+        ? ['No water quality sensors installed on this pond.']
+        : sensorRows.length
+        ? [sensorHeader, ...sensorRows]
+        : ['No sensor readings recorded in this period.']),
       '',
       '========================================================================',
       'END OF OXYNITY REPORT',
@@ -367,30 +367,6 @@ export const ReportsView: React.FC<ReportsViewProps> = ({
           </p>
         </div>
 
-        {/* Quick CSV Export Button in Header */}
-        <button
-          type="button"
-          onClick={() => handleDownloadComprehensiveCsv(period)}
-          disabled={isExporting}
-          className="min-h-[38px] px-3.5 py-1.5 rounded-xl bg-[#0E7C86] hover:bg-[#0c6b73] text-white font-extrabold text-xs flex items-center gap-1.5 shadow-xs cursor-pointer active:scale-95 transition-all shrink-0 disabled:opacity-75"
-        >
-          {isExporting ? (
-            <>
-              <RotateCw className="w-3.5 h-3.5 animate-spin" />
-              <span>Exporting...</span>
-            </>
-          ) : exportSuccess ? (
-            <>
-              <Check className="w-3.5 h-3.5 text-emerald-300" />
-              <span>Exported!</span>
-            </>
-          ) : (
-            <>
-              <Download className="w-3.5 h-3.5" />
-              <span className="capitalize">Export {period} CSV</span>
-            </>
-          )}
-        </button>
       </div>
 
       {/* ── Daily / Weekly / Monthly Segment Switcher ────────────── */}
@@ -431,8 +407,8 @@ export const ReportsView: React.FC<ReportsViewProps> = ({
               <b className="text-lg sm:text-2xl font-black text-[#0B2B33] dark:text-[#E8F4F6] mt-0.5 block">
                 {stats.sumHours.toFixed(1)} h
               </b>
-              <span className="text-[10px] text-cyan-600 dark:text-cyan-400 font-bold capitalize">
-                {period} total
+              <span className="block text-[10px] text-[#0E7C86] dark:text-[#19C3D1] font-bold leading-tight">
+                Lifetime {Number(device.totalRunHours || 0).toFixed(1)} h
               </span>
             </div>
 
@@ -440,7 +416,7 @@ export const ReportsView: React.FC<ReportsViewProps> = ({
             {hasDo ? (
               <div className="bg-white dark:bg-[#12313A] rounded-2xl p-3 sm:p-3.5 border border-[#DDE8EA] dark:border-[#1F4650] shadow-xs">
                 <small className="block text-[11px] font-bold text-[#5B7479] dark:text-[#9DB8BD] uppercase tracking-wider">
-                  Avg DO
+                  DO (latest)
                 </small>
                 <b className="text-lg sm:text-2xl font-black text-[#0B2B33] dark:text-[#E8F4F6] mt-0.5 block">
                   {stats.avgDo} ppm
@@ -452,7 +428,7 @@ export const ReportsView: React.FC<ReportsViewProps> = ({
             ) : hasPh ? (
               <div className="bg-white dark:bg-[#12313A] rounded-2xl p-3 sm:p-3.5 border border-[#DDE8EA] dark:border-[#1F4650] shadow-xs">
                 <small className="block text-[11px] font-bold text-[#5B7479] dark:text-[#9DB8BD] uppercase tracking-wider">
-                  Avg pH
+                  pH (latest)
                 </small>
                 <b className="text-lg sm:text-2xl font-black text-[#0B2B33] dark:text-[#E8F4F6] mt-0.5 block">
                   {stats.avgPh}
@@ -464,7 +440,7 @@ export const ReportsView: React.FC<ReportsViewProps> = ({
             ) : hasTemp ? (
               <div className="bg-white dark:bg-[#12313A] rounded-2xl p-3 sm:p-3.5 border border-[#DDE8EA] dark:border-[#1F4650] shadow-xs">
                 <small className="block text-[11px] font-bold text-[#5B7479] dark:text-[#9DB8BD] uppercase tracking-wider">
-                  Avg Temp
+                  Temp (latest)
                 </small>
                 <b className="text-lg sm:text-2xl font-black text-[#0B2B33] dark:text-[#E8F4F6] mt-0.5 block">
                   {formatTemp(stats.avgTemp)}
@@ -476,7 +452,7 @@ export const ReportsView: React.FC<ReportsViewProps> = ({
             ) : hasOrp ? (
               <div className="bg-white dark:bg-[#12313A] rounded-2xl p-3 sm:p-3.5 border border-[#DDE8EA] dark:border-[#1F4650] shadow-xs">
                 <small className="block text-[11px] font-bold text-[#5B7479] dark:text-[#9DB8BD] uppercase tracking-wider">
-                  Avg ORP
+                  ORP (latest)
                 </small>
                 <b className="text-lg sm:text-2xl font-black text-[#0B2B33] dark:text-[#E8F4F6] mt-0.5 block">
                   {Math.round(device.orpLevel ?? 285)} mV
@@ -488,7 +464,7 @@ export const ReportsView: React.FC<ReportsViewProps> = ({
             ) : hasSal ? (
               <div className="bg-white dark:bg-[#12313A] rounded-2xl p-3 sm:p-3.5 border border-[#DDE8EA] dark:border-[#1F4650] shadow-xs">
                 <small className="block text-[11px] font-bold text-[#5B7479] dark:text-[#9DB8BD] uppercase tracking-wider">
-                  Avg Salinity
+                  Salinity (latest)
                 </small>
                 <b className="text-lg sm:text-2xl font-black text-[#0B2B33] dark:text-[#E8F4F6] mt-0.5 block">
                   {(device.salinity ?? 15.0).toFixed(1)} ppt
@@ -516,7 +492,7 @@ export const ReportsView: React.FC<ReportsViewProps> = ({
       })()}
 
       {/* ── Run Hours SVG Bar Chart Card ─────────────────────────── */}
-      <div className="bg-white dark:bg-[#12313A] rounded-[24px] p-4 border border-[#DDE8EA] dark:border-[#1F4650] shadow-xs space-y-3">
+      <div className="ox-card p-4 space-y-3">
         <div className="flex items-center justify-between">
           <div>
             <h3 className="text-sm font-extrabold text-[#0B2B33] dark:text-[#E8F4F6]">
@@ -591,7 +567,7 @@ export const ReportsView: React.FC<ReportsViewProps> = ({
       </div>
 
       {/* ── Active Pond Sensors Live Suite Card (Shows readings dynamically when added) ── */}
-      <div className="bg-white dark:bg-[#12313A] rounded-[24px] p-4 border border-[#DDE8EA] dark:border-[#1F4650] shadow-xs space-y-3">
+      <div className="ox-card p-4 space-y-3">
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-2">
             <Activity className="w-4.5 h-4.5 text-[#0E7C86] dark:text-[#19C3D1]" />
@@ -722,88 +698,45 @@ export const ReportsView: React.FC<ReportsViewProps> = ({
 
 
       {/* ── Comprehensive Multi-Period Export Hub Card ─────────────── */}
-      <div className="bg-white dark:bg-[#12313A] rounded-[24px] p-4 border border-[#DDE8EA] dark:border-[#1F4650] shadow-xs space-y-3">
+      <div className="ox-card p-4 space-y-3">
         <div className="flex items-center gap-2">
           <FileSpreadsheet className="w-4.5 h-4.5 text-[#0E7C86] dark:text-[#19C3D1]" />
           <h3 className="text-sm font-extrabold text-[#0B2B33] dark:text-[#E8F4F6]">
-            Export Machine Running & Sensor Telemetry
+            Download report (CSV)
           </h3>
         </div>
         <p className="text-xs text-[#5B7479] dark:text-[#9DB8BD] leading-relaxed">
-          Export combined CSV records containing both machine operational logs (start/stop, duration, trigger source, operator) and water quality sensor telemetry (DO, pH, ORP, Temp, Salinity).
+          Machine start/stop log with run hours, plus readings of the sensors installed on this pond.
         </p>
 
-        {/* 3 Quick-Export Period Buttons */}
+        {/* Choose period, then download */}
         <div className="grid grid-cols-3 gap-2 pt-1">
-          <button
-            type="button"
-            disabled={isExporting}
-            onClick={() => handleDownloadComprehensiveCsv('daily')}
-            className="p-2.5 rounded-xl bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 dark:hover:bg-slate-700 text-[#0B2B33] dark:text-[#E8F4F6] text-xs font-extrabold flex flex-col items-center justify-center gap-1 border border-slate-200 dark:border-slate-700 cursor-pointer active:scale-95 transition-all disabled:opacity-50"
-          >
-            <Calendar className="w-4 h-4 text-cyan-600 dark:text-cyan-400" />
-            <span>Daily CSV</span>
-            <span className="text-[10px] text-[#5B7479] dark:text-[#9DB8BD] font-normal">Last 24h</span>
-          </button>
-
-          <button
-            type="button"
-            disabled={isExporting}
-            onClick={() => handleDownloadComprehensiveCsv('weekly')}
-            className="p-2.5 rounded-xl bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 dark:hover:bg-slate-700 text-[#0B2B33] dark:text-[#E8F4F6] text-xs font-extrabold flex flex-col items-center justify-center gap-1 border border-slate-200 dark:border-slate-700 cursor-pointer active:scale-95 transition-all disabled:opacity-50"
-          >
-            <Calendar className="w-4 h-4 text-emerald-600 dark:text-emerald-400" />
-            <span>Weekly CSV</span>
-            <span className="text-[10px] text-[#5B7479] dark:text-[#9DB8BD] font-normal">Last 7d</span>
-          </button>
-
-          <button
-            type="button"
-            disabled={isExporting}
-            onClick={() => handleDownloadComprehensiveCsv('monthly')}
-            className="p-2.5 rounded-xl bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 dark:hover:bg-slate-700 text-[#0B2B33] dark:text-[#E8F4F6] text-xs font-extrabold flex flex-col items-center justify-center gap-1 border border-slate-200 dark:border-slate-700 cursor-pointer active:scale-95 transition-all disabled:opacity-50"
-          >
-            <Calendar className="w-4 h-4 text-indigo-600 dark:text-indigo-400" />
-            <span>Monthly CSV</span>
-            <span className="text-[10px] text-[#5B7479] dark:text-[#9DB8BD] font-normal">Last 30d</span>
-          </button>
+          {(['daily', 'weekly', 'monthly'] as const).map((p) => (
+            <button
+              key={p}
+              type="button"
+              disabled={isExporting}
+              onClick={() => handleDownloadComprehensiveCsv(p)}
+              className="ox-btn ox-btn-secondary ox-btn-sm"
+            >
+              <Download className="w-3.5 h-3.5" />
+              {p === 'daily' ? '24 hours' : p === 'weekly' ? '7 days' : '30 days'}
+            </button>
+          ))}
         </div>
-
-        {/* Primary Download Button for Current Period */}
-        <button
-          type="button"
-          onClick={() => handleDownloadComprehensiveCsv(period)}
-          disabled={isExporting}
-          className="w-full min-h-[48px] rounded-2xl bg-[#0E7C86] hover:bg-[#0c6b73] text-white font-extrabold text-xs sm:text-sm flex items-center justify-center gap-2 shadow-md cursor-pointer active:scale-98 transition-all mt-2 disabled:opacity-75"
-        >
-          {isExporting ? (
-            <>
-              <RotateCw className="w-4 h-4 animate-spin" />
-              <span>Exporting & Preparing File...</span>
-            </>
-          ) : exportSuccess ? (
-            <>
-              <Check className="w-4 h-4 text-emerald-300" />
-              <span>Report Exported Successfully!</span>
-            </>
-          ) : (
-            <>
-              <Download className="w-4 h-4" />
-              <span className="capitalize">Download Complete {period} Report (CSV)</span>
-            </>
-          )}
+        <button type="button" onClick={() => window.print()} className="ox-btn ox-btn-outline ox-btn-block">
+          <FileText className="w-4 h-4" />
+          Save as PDF / Print
         </button>
-
-        {/* PDF / Printable Document Option */}
-        <button
-          type="button"
-          onClick={() => window.print()}
-          className="w-full min-h-[44px] rounded-2xl bg-[#E6EFF1] hover:bg-[#DDE8EA] dark:bg-[#1B3A43] dark:hover:bg-[#24444D] text-[#0B2B33] dark:text-[#E8F4F6] font-bold text-xs sm:text-sm flex items-center justify-center gap-2 border border-[#DDE8EA] dark:border-[#1F4650] cursor-pointer active:scale-98 transition-all"
-        >
-          <FileText className="w-4 h-4 text-[#0E7C86] dark:text-[#19C3D1]" />
-          <span>Save as PDF / Print Report</span>
-        </button>
+        {(isExporting || exportSuccess) && (
+          <div className="text-xs font-bold text-[#0E7C86] dark:text-[#19C3D1] text-center">
+            {isExporting ? 'Preparing file…' : 'Report downloaded ✓'}
+          </div>
+        )}
       </div>
+
+      {/* Whole-crop / custom date report with estimated power use */}
+      <CropReportCard device={device} onSaveDates={onSaveCropDates} sensorsOn={sensorsEnabled} />
     </div>
   );
 };

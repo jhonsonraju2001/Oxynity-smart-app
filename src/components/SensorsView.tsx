@@ -9,6 +9,8 @@ interface SensorsViewProps {
   onUpdateSchedules?: (schedules: AeratorSchedule[]) => void;
   isOnline?: boolean;
   sensorsEnabled: EnabledSensors;
+  /** Sensors physically installed on this pond (set by admin). Missing = all installed. */
+  installedSensors?: EnabledSensors;
   onToggleSensor: (key: keyof EnabledSensors) => void;
 }
 
@@ -18,8 +20,10 @@ export const SensorsView: React.FC<SensorsViewProps> = ({
   onUpdateSchedules,
   isOnline = true,
   sensorsEnabled,
+  installedSensors,
   onToggleSensor,
 }) => {
+  const inst: EnabledSensors = installedSensors || { do: true, ph: true, orp: true, temp: true, sal: true };
   const [tempUnit, setTempUnit] = useState<'C' | 'F'>(() => {
     return (localStorage.getItem('oxynity_temp_unit') as any) || 'C';
   });
@@ -46,12 +50,12 @@ export const SensorsView: React.FC<SensorsViewProps> = ({
           Sensors
         </h2>
         <p className="text-xs text-[#5B7479] dark:text-[#9DB8BD] mt-0.5">
-          Switch a sensor on to show its animation on Home.
+          Switch a sensor on to show it on Home, off to hide it.
         </p>
       </div>
 
       {/* Sensor Switch List Card */}
-      <div className="bg-white dark:bg-[#12313A] rounded-[24px] p-4 border border-[#DDE8EA] dark:border-[#1F4650] shadow-xs divide-y divide-[#DDE8EA] dark:divide-[#1F4650]">
+      <div className="ox-card p-4 divide-y divide-[#DDE8EA] dark:divide-[#1F4650]">
         {/* DO Sensor */}
         <div className="py-3 flex items-center justify-between gap-3">
           <div>
@@ -71,16 +75,8 @@ export const SensorsView: React.FC<SensorsViewProps> = ({
             role="switch"
             aria-checked={sensorsEnabled.do}
             onClick={() => toggleSensor('do')}
-            className={`w-13 h-7.5 rounded-full relative transition-colors cursor-pointer shrink-0 ${
-              sensorsEnabled.do ? 'bg-[#0E7C86] dark:bg-[#19C3D1]' : 'bg-[#DCE9EC] dark:bg-[#24444D]'
-            }`}
-          >
-            <span
-              className={`block w-6 h-6 rounded-full bg-white shadow-md absolute top-0.75 left-1 transition-transform ${
-                sensorsEnabled.do ? 'translate-x-5.5' : 'translate-x-0'
-              }`}
-            />
-          </button>
+            className="ox-switch"
+          />
         </div>
 
         {/* pH Sensor */}
@@ -100,16 +96,8 @@ export const SensorsView: React.FC<SensorsViewProps> = ({
             role="switch"
             aria-checked={sensorsEnabled.ph}
             onClick={() => toggleSensor('ph')}
-            className={`w-13 h-7.5 rounded-full relative transition-colors cursor-pointer shrink-0 ${
-              sensorsEnabled.ph ? 'bg-[#0E7C86] dark:bg-[#19C3D1]' : 'bg-[#DCE9EC] dark:bg-[#24444D]'
-            }`}
-          >
-            <span
-              className={`block w-6 h-6 rounded-full bg-white shadow-md absolute top-0.75 left-1 transition-transform ${
-                sensorsEnabled.ph ? 'translate-x-5.5' : 'translate-x-0'
-              }`}
-            />
-          </button>
+            className="ox-switch"
+          />
         </div>
 
         {/* ORP Sensor */}
@@ -129,16 +117,8 @@ export const SensorsView: React.FC<SensorsViewProps> = ({
             role="switch"
             aria-checked={sensorsEnabled.orp}
             onClick={() => toggleSensor('orp')}
-            className={`w-13 h-7.5 rounded-full relative transition-colors cursor-pointer shrink-0 ${
-              sensorsEnabled.orp ? 'bg-[#0E7C86] dark:bg-[#19C3D1]' : 'bg-[#DCE9EC] dark:bg-[#24444D]'
-            }`}
-          >
-            <span
-              className={`block w-6 h-6 rounded-full bg-white shadow-md absolute top-0.75 left-1 transition-transform ${
-                sensorsEnabled.orp ? 'translate-x-5.5' : 'translate-x-0'
-              }`}
-            />
-          </button>
+            className="ox-switch"
+          />
         </div>
 
         {/* Temperature Sensor */}
@@ -160,16 +140,8 @@ export const SensorsView: React.FC<SensorsViewProps> = ({
             role="switch"
             aria-checked={sensorsEnabled.temp}
             onClick={() => toggleSensor('temp')}
-            className={`w-13 h-7.5 rounded-full relative transition-colors cursor-pointer shrink-0 ${
-              sensorsEnabled.temp ? 'bg-[#0E7C86] dark:bg-[#19C3D1]' : 'bg-[#DCE9EC] dark:bg-[#24444D]'
-            }`}
-          >
-            <span
-              className={`block w-6 h-6 rounded-full bg-white shadow-md absolute top-0.75 left-1 transition-transform ${
-                sensorsEnabled.temp ? 'translate-x-5.5' : 'translate-x-0'
-              }`}
-            />
-          </button>
+            className="ox-switch"
+          />
         </div>
 
         {/* Salinity Sensor */}
@@ -189,18 +161,11 @@ export const SensorsView: React.FC<SensorsViewProps> = ({
             role="switch"
             aria-checked={sensorsEnabled.sal}
             onClick={() => toggleSensor('sal')}
-            className={`w-13 h-7.5 rounded-full relative transition-colors cursor-pointer shrink-0 ${
-              sensorsEnabled.sal ? 'bg-[#0E7C86] dark:bg-[#19C3D1]' : 'bg-[#DCE9EC] dark:bg-[#24444D]'
-            }`}
-          >
-            <span
-              className={`block w-6 h-6 rounded-full bg-white shadow-md absolute top-0.75 left-1 transition-transform ${
-                sensorsEnabled.sal ? 'translate-x-5.5' : 'translate-x-0'
-              }`}
-            />
-          </button>
+            className="ox-switch"
+          />
         </div>
       </div>
+
 
       {/* Schedules Card */}
       <AeratorSchedules

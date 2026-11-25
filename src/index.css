@@ -244,3 +244,57 @@
   }
 }
 
+
+/* ---- Alarm banner + animated weather card ---- */
+@keyframes ox-alarm-flash { 0%, 100% { box-shadow: 0 0 0 0 rgba(239, 68, 68, 0.7); } 50% { box-shadow: 0 0 0 10px rgba(239, 68, 68, 0); } }
+.ox-alarm { animation: ox-alarm-flash 1s infinite; }
+@keyframes ox-spin-slow { to { transform: rotate(360deg); } }
+@keyframes ox-drift { 0%, 100% { transform: translateX(-6px); } 50% { transform: translateX(8px); } }
+@keyframes ox-rain { 0% { transform: translateY(-4px); opacity: 0; } 30% { opacity: 1; } 100% { transform: translateY(14px); opacity: 0; } }
+@keyframes ox-wind { 0% { transform: translateX(-14px); opacity: 0; } 40% { opacity: 1; } 100% { transform: translateX(16px); opacity: 0; } }
+@keyframes ox-pulse-warn { 0%, 100% { transform: scale(1); } 50% { transform: scale(1.015); } }
+@keyframes ox-sheen { 0% { background-position: 0% 50%; } 100% { background-position: 100% 50%; } }
+.ox-sun { animation: ox-spin-slow 14s linear infinite; transform-origin: 50% 50%; }
+.ox-cloud { animation: ox-drift 6s ease-in-out infinite; }
+.ox-cloud2 { animation: ox-drift 9s ease-in-out infinite reverse; }
+.ox-drop { animation: ox-rain 1.1s linear infinite; }
+.ox-gust { animation: ox-wind 1.8s ease-in-out infinite; }
+.ox-warn { animation: ox-pulse-warn 1.6s ease-in-out infinite; }
+.ox-wx { background-size: 200% 200%; animation: ox-sheen 12s linear infinite alternate; }
+
+@layer components {
+/* ===================== Oxynity design system =====================
+   One look for every card, button and switch (customer + admin).   */
+.ox-card { background: #fff; border: 1px solid #DDE8EA; border-radius: 24px; box-shadow: 0 1px 2px rgba(11, 43, 51, 0.05); }
+.dark .ox-card, [data-theme=dark] .ox-card { background: #12313A; border-color: #1F4650; }
+
+.ox-btn { display: inline-flex; align-items: center; justify-content: center; gap: 8px; min-height: 44px; padding: 0 16px;
+  border-radius: 14px; font-size: 13px; font-weight: 800; line-height: 1.1; text-align: center; cursor: pointer;
+  border: 1px solid transparent; transition: background-color .15s, box-shadow .15s, transform .05s; white-space: nowrap; }
+.ox-btn:active { transform: translateY(1px); }
+.ox-btn:disabled { opacity: .5; cursor: not-allowed; }
+.ox-btn-sm { min-height: 36px; padding: 0 12px; font-size: 12px; border-radius: 12px; }
+.ox-btn-block { width: 100%; }
+.ox-btn-primary { background: #0E7C86; color: #fff; box-shadow: 0 2px 6px rgba(14, 124, 134, .25); }
+.ox-btn-primary:hover { background: #0B6870; }
+.ox-btn-secondary { background: #E6F2F3; color: #0B2B33; border-color: #CFE3E6; }
+.ox-btn-secondary:hover { background: #D8ECEE; }
+.ox-btn-outline { background: #fff; color: #0B2B33; border-color: #DDE8EA; }
+.ox-btn-outline:hover { background: #F3F8F9; }
+.ox-btn-danger { background: #DC2626; color: #fff; }
+.dark .ox-btn-secondary, [data-theme=dark] .ox-btn-secondary { background: #18404A; color: #E8F4F6; border-color: #1F4650; }
+.dark .ox-btn-outline, [data-theme=dark] .ox-btn-outline { background: #12313A; color: #E8F4F6; border-color: #1F4650; }
+
+.ox-switch { position: relative; width: 52px; height: 30px; border-radius: 999px; flex-shrink: 0; cursor: pointer; border: 0;
+  background: #DCE9EC; transition: background-color .2s; }
+.ox-switch[aria-checked=true] { background: #0E7C86; }
+.ox-switch::after { content: ''; position: absolute; top: 3px; left: 4px; width: 24px; height: 24px; border-radius: 999px;
+  background: #fff; box-shadow: 0 1px 3px rgba(0,0,0,.25); transition: transform .2s; }
+.ox-switch[aria-checked=true]::after { transform: translateX(20px); }
+.dark .ox-switch, [data-theme=dark] .ox-switch { background: #24444D; }
+.dark .ox-switch[aria-checked=true], [data-theme=dark] .ox-switch[aria-checked=true] { background: #19C3D1; }
+
+.ox-input { width: 100%; min-height: 44px; padding: 0 12px; border-radius: 14px; border: 1px solid #DDE8EA; background: #fff;
+  font-size: 14px; font-weight: 700; color: #0B2B33; }
+.dark .ox-input, [data-theme=dark] .ox-input { background: #08222A; border-color: #1F4650; color: #E8F4F6; }
+}

@@ -1,3 +1,4 @@
+import { isAdminEmail } from '../lib/oxynity';
 import React, { useState, useEffect } from 'react';
 import { X, Moon, Sun, Monitor, Bell, WifiOff, LogOut, PlusCircle, Wrench } from 'lucide-react';
 import { DeviceTelemetry } from '../types/iot';
@@ -169,8 +170,8 @@ export const SettingsSheet: React.FC<SettingsSheetProps> = ({
           </button>
         </div>
 
-        {/* 4. Demo & Simulation Tools */}
-        <div className="space-y-2 pt-1">
+        {/* 4. Demo & Simulation Tools (admins only) */}
+        <div className={isAdminEmail(userEmail) ? 'space-y-2 pt-1' : 'hidden'}>
           <label className="block text-xs font-bold text-[#5B7479] dark:text-[#9DB8BD]">
             Demo & Test Tools
           </label>

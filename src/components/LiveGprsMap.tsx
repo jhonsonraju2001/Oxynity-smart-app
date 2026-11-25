@@ -58,7 +58,7 @@ export const LiveGprsMap: React.FC<LiveGprsMapProps> = ({
         <MapPin className="w-10 h-10 text-slate-500 mx-auto" />
         <h3 className="text-base font-bold text-white">No Linked Pond</h3>
         <p className="text-xs text-slate-400">
-          Please link your ESP32 device to view live GSM SIM900A GPRS telemetry.
+          Please link your ESP32 device to view live SIMCom A7672S 4G LTE telemetry.
         </p>
       </div>
     );
@@ -67,7 +67,7 @@ export const LiveGprsMap: React.FC<LiveGprsMapProps> = ({
   const {
     latitude,
     longitude,
-    locationName = 'SIM900A GPRS Station',
+    locationName = 'A7672S 4G Station',
     gprsSignal = 0,
     name = 'Oxynity Pond',
     deviceId,
@@ -124,9 +124,14 @@ export const LiveGprsMap: React.FC<LiveGprsMapProps> = ({
   const mapInstanceRef = useRef<L.Map | null>(null);
   const markerRef = useRef<L.Marker | null>(null);
   const anchorMarkerRef = useRef<L.Marker | null>(null);
+  const geofenceCircleRef = useRef<L.Circle | null>(null);
   const travelLineRef = useRef<L.Polyline | null>(null);
   const polylineRef = useRef<L.Polyline | null>(null);
   const tileLayerRef = useRef<L.TileLayer | null>(null);
+
+  const [showManualModal, setShowManualModal] = useState(false);
+  const [inputLat, setInputLat] = useState('');
+  const [inputLng, setInputLng] = useState('');
 
   // Re-render every 3 seconds to update relative live heartbeat counter ("X seconds ago")
   useEffect(() => {
@@ -136,8 +141,8 @@ export const LiveGprsMap: React.FC<LiveGprsMapProps> = ({
 
   // Persistent REAL GPRS Pings log (stored in localStorage for this device ID)
   const [realPings, setRealPings] = useState<RealGprsPing[]>(() => {
-    const storageKey = `oxynity_sim900a_pings_${deviceId}`;
-    const saved = localStorage.getItem(storageKey);
+    const storageKey = `oxynity_a7672s_pings_${deviceId}`;
+    const saved = localStorage.getItem(storageKey) || localStorage.getItem(`oxynity_sim900a_pings_${deviceId}`);
     if (saved) {
       try {
         const parsed = JSON.parse(saved);
@@ -163,7 +168,7 @@ export const LiveGprsMap: React.FC<LiveGprsMapProps> = ({
           longitude: parseFloat(displayLng.toFixed(6)),
           signalCsq: gprsSignal,
           locationName: displayLocName || 'Amalapuram Pond, Andhra Pradesh',
-          source: isLegacyKerala ? 'Amalapuram GPRS Base Station' : (device.locationSource || 'SIM900A GPRS Cell LBS'),
+          source: isLegacyKerala ? 'Amalapuram GPRS Base Station' : (device.locationSource || 'SIMCom A7672S 4G LTE'),
         },
       ];
     }
@@ -190,10 +195,10 @@ export const LiveGprsMap: React.FC<LiveGprsMapProps> = ({
           longitude: parseFloat(displayLng.toFixed(6)),
           signalCsq: gprsSignal,
           locationName: displayLocName || 'Amalapuram Pond, Andhra Pradesh',
-          source: isLegacyKerala ? 'Amalapuram GPRS Base Station' : (device.locationSource || 'SIM900A GPRS Cell LBS'),
+          source: isLegacyKerala ? 'Amalapuram GPRS Base Station' : (device.locationSource || 'SIMCom A7672S 4G LTE'),
         };
         const updated = [newPing, ...prev.slice(0, 49)]; // keep latest 50 real pings
-        localStorage.setItem(`oxynity_sim900a_pings_${deviceId}`, JSON.stringify(updated));
+        localStorage.setItem(`oxynity_a7672s_pings_${deviceId}`, JSON.stringify(updated));
         return updated;
       }
       return prev;
@@ -234,9 +239,9 @@ export const LiveGprsMap: React.FC<LiveGprsMapProps> = ({
         maxZoom: 19,
       }).addTo(map);
 
-      // Custom animated SIM900A Cell Marker
+      // Custom animated SIMCom A7672S 4G Cell Marker
       const customIcon = L.divIcon({
-        className: 'custom-oxynity-sim900a-marker',
+        className: 'custom-oxynity-a7672s-marker',
         html: `
           <div style="position: relative; width: 48px; height: 48px; display: flex; align-items: center; justify-content: center;">
             <div style="position: absolute; width: 48px; height: 48px; background: rgba(14, 165, 233, 0.35); border-radius: 50%; animation: ping 2s cubic-bezier(0, 0, 0.2, 1) infinite;"></div>
@@ -258,7 +263,7 @@ export const LiveGprsMap: React.FC<LiveGprsMapProps> = ({
       const marker = L.marker([currentLat, currentLng], { icon: customIcon }).addTo(map);
       marker.bindPopup(`
         <div style="font-family: sans-serif; font-size: 11px; padding: 2px;">
-          <strong style="color: #0284c7; font-size: 12px; display: block; margin-bottom: 2px;">${isMoving ? '🚗 Moving SIM900A Fix' : '📡 SIM900A GPRS Position'}</strong>
+          <strong style="color: #0284c7; font-size: 12px; display: block; margin-bottom: 2px;">${isMoving ? '🚗 Moving A7672S 4G Fix' : '📡 SIMCom A7672S 4G Position'}</strong>
           <span style="font-weight: bold; color: #1e293b;">${name}</span><br/>
           <span style="font-family: monospace; color: #475569;">${currentLat.toFixed(5)}, ${currentLng.toFixed(5)}</span><br/>
           <span style="color: #10b981; font-weight: bold;">CSQ Signal: ${gprsSignal}%</span>
@@ -277,54 +282,96 @@ export const LiveGprsMap: React.FC<LiveGprsMapProps> = ({
       }
     }
 
-    // Secondary Marker: Calibrated Pond Anchor when SIM900A is moving away from it
+    // Geofence Circle (1.0 km) & Calibrated Pond Anchor
     if (mapInstanceRef.current) {
-      if (hasCalibratedCoords && isMoving) {
+      if (hasCalibratedCoords) {
         const calLat = calibratedLatitude!;
         const calLng = calibratedLongitude!;
+        const isBreached = moveDistanceKm > 1.0 || device.isGeofenceBreached === true;
+        const circleColor = isBreached ? '#ef4444' : '#10b981';
 
-        if (!anchorMarkerRef.current) {
-          const anchorIcon = L.divIcon({
-            className: 'custom-oxynity-anchor-marker',
-            html: `
-              <div style="position: relative; width: 42px; height: 42px; display: flex; align-items: center; justify-content: center;">
-                <div style="position: relative; width: 32px; height: 32px; background: #059669; border: 3px solid white; border-radius: 50%; display: flex; align-items: center; justify-content: center; box-shadow: 0 4px 12px rgba(0,0,0,0.35);">
-                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
-                    <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>
-                  </svg>
-                </div>
-              </div>
-            `,
-            iconSize: [42, 42],
-            iconAnchor: [21, 21],
-          });
-
-          const anchorMarker = L.marker([calLat, calLng], { icon: anchorIcon }).addTo(mapInstanceRef.current);
-          anchorMarker.bindPopup(`
-            <div style="font-family: sans-serif; font-size: 11px; padding: 2px;">
-              <strong style="color: #059669; font-size: 12px; display: block; margin-bottom: 2px;">🔒 Calibrated Pond Anchor</strong>
-              <span style="font-weight: bold; color: #1e293b;">${calibratedLocationName || 'Pond Anchor'}</span><br/>
-              <span style="font-family: monospace; color: #475569;">${calLat.toFixed(5)}, ${calLng.toFixed(5)}</span><br/>
-              <span style="color: #0284c7; font-weight: bold;">Status: Anchored Baseline</span>
-            </div>
-          `);
-          anchorMarkerRef.current = anchorMarker;
+        // 1.0 km radius geofence boundary circle
+        if (!geofenceCircleRef.current) {
+          geofenceCircleRef.current = L.circle([calLat, calLng], {
+            radius: 1000, // 1 km radius
+            color: circleColor,
+            weight: isBreached ? 3 : 2,
+            dashArray: isBreached ? '8, 6' : '6, 6',
+            fillColor: circleColor,
+            fillOpacity: isBreached ? 0.15 : 0.08,
+          }).addTo(mapInstanceRef.current);
         } else {
-          anchorMarkerRef.current.setLatLng([calLat, calLng]);
+          geofenceCircleRef.current.setLatLng([calLat, calLng]);
+          geofenceCircleRef.current.setStyle({
+            color: circleColor,
+            weight: isBreached ? 3 : 2,
+            dashArray: isBreached ? '8, 6' : '6, 6',
+            fillColor: circleColor,
+            fillOpacity: isBreached ? 0.15 : 0.08,
+          });
         }
 
-        // Draw dashed travel line from Calibrated Pond to Moving SIM900A
-        if (!travelLineRef.current) {
-          const travelLine = L.polyline([[calLat, calLng], [currentLat, currentLng]], {
-            color: '#f59e0b',
-            weight: 3,
-            dashArray: '6, 6',
-          }).addTo(mapInstanceRef.current);
-          travelLineRef.current = travelLine;
+        if (isMoving) {
+          if (!anchorMarkerRef.current) {
+            const anchorIcon = L.divIcon({
+              className: 'custom-oxynity-anchor-marker',
+              html: `
+                <div style="position: relative; width: 42px; height: 42px; display: flex; align-items: center; justify-content: center;">
+                  <div style="position: relative; width: 32px; height: 32px; background: ${isBreached ? '#dc2626' : '#059669'}; border: 3px solid white; border-radius: 50%; display: flex; align-items: center; justify-content: center; box-shadow: 0 4px 12px rgba(0,0,0,0.35);">
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+                      <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>
+                    </svg>
+                  </div>
+                </div>
+              `,
+              iconSize: [42, 42],
+              iconAnchor: [21, 21],
+            });
+
+            const anchorMarker = L.marker([calLat, calLng], { icon: anchorIcon }).addTo(mapInstanceRef.current);
+            anchorMarker.bindPopup(`
+              <div style="font-family: sans-serif; font-size: 11px; padding: 2px;">
+                <strong style="color: ${isBreached ? '#dc2626' : '#059669'}; font-size: 12px; display: block; margin-bottom: 2px;">🔒 Calibrated Pond Anchor</strong>
+                <span style="font-weight: bold; color: #1e293b;">${calibratedLocationName || 'Pond Anchor'}</span><br/>
+                <span style="font-family: monospace; color: #475569;">${calLat.toFixed(5)}, ${calLng.toFixed(5)}</span><br/>
+                <span style="color: ${isBreached ? '#dc2626' : '#059669'}; font-weight: bold;">${isBreached ? '🚨 GEOFENCE BREACH (> 1.0 km)' : 'Status: Stationary Anchor (1 km Safe)'}</span>
+              </div>
+            `);
+            anchorMarkerRef.current = anchorMarker;
+          } else {
+            anchorMarkerRef.current.setLatLng([calLat, calLng]);
+          }
+
+          // Draw dashed travel line from Calibrated Pond to Moving Machine
+          if (!travelLineRef.current) {
+            const travelLine = L.polyline([[calLat, calLng], [currentLat, currentLng]], {
+              color: isBreached ? '#ef4444' : '#f59e0b',
+              weight: isBreached ? 4 : 3,
+              dashArray: '6, 6',
+            }).addTo(mapInstanceRef.current);
+            travelLineRef.current = travelLine;
+          } else {
+            travelLineRef.current.setLatLngs([[calLat, calLng], [currentLat, currentLng]]);
+            travelLineRef.current.setStyle({
+              color: isBreached ? '#ef4444' : '#f59e0b',
+              weight: isBreached ? 4 : 3,
+            });
+          }
         } else {
-          travelLineRef.current.setLatLngs([[calLat, calLng], [currentLat, currentLng]]);
+          if (anchorMarkerRef.current) {
+            anchorMarkerRef.current.remove();
+            anchorMarkerRef.current = null;
+          }
+          if (travelLineRef.current) {
+            travelLineRef.current.remove();
+            travelLineRef.current = null;
+          }
         }
       } else {
+        if (geofenceCircleRef.current) {
+          geofenceCircleRef.current.remove();
+          geofenceCircleRef.current = null;
+        }
         if (anchorMarkerRef.current) {
           anchorMarkerRef.current.remove();
           anchorMarkerRef.current = null;
@@ -459,9 +506,61 @@ export const LiveGprsMap: React.FC<LiveGprsMapProps> = ({
     }
   };
 
-  // Reset / Unstick calibration and return to pure live SIM900A cellular tracking
+  // Calibrate pond coordinates using SIMCom A7672S 4G module live GPS
+  const handleCalibrateDeviceGps = async () => {
+    if (!latitude || !longitude || Math.abs(latitude) < 0.01) {
+      alert('SIMCom A7672S 4G module has not acquired a live GPS fix yet. Please verify GNSS antenna.');
+      return;
+    }
+    setIsCalibrating(true);
+    try {
+      const lat = parseFloat(latitude.toFixed(6));
+      const lng = parseFloat(longitude.toFixed(6));
+      const locLabel = `A7672S 4G GNSS Anchor (${lat.toFixed(5)}, ${lng.toFixed(5)})`;
+      if (onCalibrateLocation) {
+        await onCalibrateLocation(lat, lng, locLabel, cellLac, cellId);
+      }
+      if (mapInstanceRef.current) {
+        mapInstanceRef.current.setView([lat, lng], 17, { animate: true });
+      }
+      setIsCalibrating(false);
+      setCalibrateSuccess(true);
+      setTimeout(() => setCalibrateSuccess(false), 3500);
+    } catch (e: any) {
+      setIsCalibrating(false);
+      alert(`Calibration failed: ${e.message || e}`);
+    }
+  };
+
+  // Calibrate using manual coordinates
+  const handleSaveManual = async () => {
+    const lat = parseFloat(inputLat);
+    const lng = parseFloat(inputLng);
+    if (isNaN(lat) || isNaN(lng) || Math.abs(lat) > 90 || Math.abs(lng) > 180) {
+      alert('Please enter valid coordinates (e.g. 16.5787, 82.0061)');
+      return;
+    }
+    setIsCalibrating(true);
+    try {
+      const locLabel = `Manual Pond Anchor (${lat.toFixed(5)}, ${lng.toFixed(5)})`;
+      if (onCalibrateLocation) {
+        await onCalibrateLocation(lat, lng, locLabel, cellLac, cellId);
+      }
+      setShowManualModal(false);
+      setInputLat('');
+      setInputLng('');
+      setIsCalibrating(false);
+      setCalibrateSuccess(true);
+      setTimeout(() => setCalibrateSuccess(false), 3500);
+    } catch (e: any) {
+      setIsCalibrating(false);
+      alert(`Save failed: ${e.message || e}`);
+    }
+  };
+
+  // Reset / Unstick calibration and return to pure live A7672S cellular tracking
   const handleResetCalibrationClick = async () => {
-    if (confirm('Unstick pond calibration and switch back to dynamic live moving SIM900A tracking?')) {
+    if (confirm('Unstick pond calibration and switch back to dynamic live moving SIMCom A7672S tracking?')) {
       setIsResetting(true);
       try {
         if (onResetCalibration) {
@@ -500,13 +599,13 @@ export const LiveGprsMap: React.FC<LiveGprsMapProps> = ({
     ]);
 
     const csvContent = [headers.join(','), ...rows.map((r) => r.join(','))].join('\n');
-    const filename = `SIM900A_GPRS_Pings_${deviceId}_${new Date().toISOString().split('T')[0]}.csv`;
+    const filename = `A7672S_4G_Pings_${deviceId}_${new Date().toISOString().split('T')[0]}.csv`;
 
     exportFile({
       filename,
       content: csvContent,
       mimeType: 'text/csv;charset=utf-8;',
-      title: `SIM900A GPRS Pings (${name || deviceId})`,
+      title: `SIMCom A7672S 4G Pings (${name || deviceId})`,
       dialogTitle: 'Export GPRS Pings CSV',
     })
       .then((res) => {
@@ -521,7 +620,7 @@ export const LiveGprsMap: React.FC<LiveGprsMapProps> = ({
   };
 
   const handleClearHistory = () => {
-    if (confirm('Clear SIM900A location ping history for this device?')) {
+    if (confirm('Clear A7672S location ping history for this device?')) {
       const reset = [
         {
           id: `ping-${Date.now()}`,
@@ -530,12 +629,12 @@ export const LiveGprsMap: React.FC<LiveGprsMapProps> = ({
           latitude: parseFloat(latitude.toFixed(6)),
           longitude: parseFloat(longitude.toFixed(6)),
           signalCsq: gprsSignal,
-          locationName: locationName || 'SIM900A Cell Tower',
-          source: 'SIM900A AT+CIPGSMLOC',
+          locationName: locationName || 'A7672S 4G Station',
+          source: 'A7672S 4G GNSS',
         },
       ];
       setRealPings(reset);
-      localStorage.setItem(`oxynity_sim900a_pings_${deviceId}`, JSON.stringify(reset));
+      localStorage.setItem(`oxynity_a7672s_pings_${deviceId}`, JSON.stringify(reset));
     }
   };
 
@@ -572,10 +671,10 @@ export const LiveGprsMap: React.FC<LiveGprsMapProps> = ({
               </div>
               <div className="min-w-0">
                 <h3 className="text-xs sm:text-sm font-black text-slate-800 dark:text-slate-100 uppercase tracking-wide truncate">
-                  SIM900A GPRS Live Location
+                  SIMCom A7672S 4G LTE Live Location
                 </h3>
                 <p className="text-[11px] text-slate-500 dark:text-slate-400 truncate">
-                  Cell Tower Triangulation (AT+CIPGSMLOC) for{' '}
+                  Built-in GNSS / GPS + 4G LTE Cat-1 Telemetry for{' '}
                   <span className="font-bold text-sky-600 dark:text-sky-400">{name}</span>
                 </p>
               </div>
@@ -584,7 +683,7 @@ export const LiveGprsMap: React.FC<LiveGprsMapProps> = ({
             <div className="flex items-center flex-wrap gap-1.5 shrink-0">
               <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-xl text-[10px] font-extrabold bg-sky-50 dark:bg-sky-950/70 border border-sky-200 dark:border-sky-800 text-sky-700 dark:text-sky-300 shrink-0">
                 <span className="w-2 h-2 rounded-full bg-emerald-500 animate-ping" />
-                <span>SIM900A GPRS</span>
+                <span>A7672S 4G LTE</span>
               </div>
 
               <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-xl text-[11px] font-bold bg-slate-100 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-slate-700 dark:text-slate-300 shrink-0">
@@ -600,21 +699,21 @@ export const LiveGprsMap: React.FC<LiveGprsMapProps> = ({
           <div className="flex items-center justify-between gap-2 text-xs pt-1">
             <span className="text-[11px] text-slate-500 dark:text-slate-400 flex items-center gap-1 truncate">
               <Clock className="w-3 h-3 text-sky-500 shrink-0" />
-              <span>GPRS Heartbeat: {getRelativeTimeString()}</span>
+              <span>4G Heartbeat: {getRelativeTimeString()}</span>
             </span>
 
             <span className="px-2 py-0.5 rounded-full text-[10px] font-extrabold bg-emerald-100 dark:bg-emerald-950 text-emerald-800 dark:text-emerald-300 border border-emerald-300 dark:border-emerald-800 flex items-center gap-1 shrink-0 whitespace-nowrap">
-              <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-ping" /> Real-time Cellular Fix
+              <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-ping" /> Real-time 4G GNSS Fix
             </span>
           </div>
         </div>
 
-        {/* 2. GSM HARDWARE & TELEMETRY SPECS CARD */}
-        <div className="grid grid-cols-2 gap-2">
+        {/* 2. 4G HARDWARE & TELEMETRY SPECS CARD */}
+        <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
           {/* Signal Quality */}
           <div className="bg-slate-50 dark:bg-slate-800/60 p-2.5 rounded-xl border border-slate-100 dark:border-slate-800">
             <span className="text-[10px] font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wider block truncate">
-              GSM Signal (CSQ)
+              4G LTE Signal
             </span>
             <div className="flex items-center justify-between mt-1">
               <p className="text-sm sm:text-base font-black text-slate-800 dark:text-slate-100 font-mono">
@@ -635,10 +734,10 @@ export const LiveGprsMap: React.FC<LiveGprsMapProps> = ({
             </div>
           </div>
 
-          {/* GPRS Bearer State */}
+          {/* 4G Bearer State */}
           <div className="bg-slate-50 dark:bg-slate-800/60 p-2.5 rounded-xl border border-slate-100 dark:border-slate-800">
             <span className="text-[10px] font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wider block truncate">
-              GPRS Bearer
+              Network State
             </span>
             <div className="flex items-center gap-1.5 mt-1">
               <span
@@ -647,7 +746,7 @@ export const LiveGprsMap: React.FC<LiveGprsMapProps> = ({
                 }`}
               />
               <p className="text-xs sm:text-sm font-extrabold text-slate-800 dark:text-slate-100 truncate">
-                {gprsConnected ? 'Active (SAPBR:1)' : 'Reconnecting'}
+                {gprsConnected ? 'Connected (4G)' : 'Searching'}
               </p>
             </div>
           </div>
@@ -660,7 +759,7 @@ export const LiveGprsMap: React.FC<LiveGprsMapProps> = ({
             <div className="flex items-center gap-1 mt-1">
               <Cpu className="w-3.5 h-3.5 text-sky-500 shrink-0" />
               <p className="text-xs font-black text-slate-800 dark:text-slate-100 truncate">
-                SIM900A 2G GSM
+                SIMCom A7672S
               </p>
             </div>
           </div>
@@ -668,20 +767,63 @@ export const LiveGprsMap: React.FC<LiveGprsMapProps> = ({
           {/* Location Mode */}
           <div className="bg-slate-50 dark:bg-slate-800/60 p-2.5 rounded-xl border border-slate-100 dark:border-slate-800">
             <span className="text-[10px] font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wider block truncate">
-              Location Method
+              Positioning
             </span>
             <div className="flex items-center gap-1 mt-1">
               <Compass className="w-3.5 h-3.5 text-indigo-500 shrink-0" />
               <p className="text-xs font-black text-slate-800 dark:text-slate-100 truncate">
-                Cell LBS (Triangulation)
+                GNSS / GPS + LBS
               </p>
             </div>
           </div>
         </div>
       </div>
 
-      {/* 2b. DUAL-MODE CALIBRATION & MOVING STATUS BANNER */}
-      {isMoving ? (
+      {/* 2b. GEOFENCE BREACH WARNING BANNER (> 1.0 KM) */}
+      {(moveDistanceKm > 1.0 || device.isGeofenceBreached === true) && (
+        <div className="p-3.5 bg-rose-500/15 border-2 border-rose-500 rounded-2xl flex flex-col sm:flex-row items-center justify-between gap-3 text-xs animate-pulse shadow-md shadow-rose-500/10">
+          <div className="flex items-center gap-2.5 min-w-0">
+            <div className="p-2 rounded-xl bg-rose-600 text-white shrink-0 shadow-sm">
+              <Navigation className="w-4 h-4 animate-bounce" />
+            </div>
+            <div className="min-w-0">
+              <div className="flex items-center flex-wrap gap-2">
+                <span className="font-black text-rose-600 dark:text-rose-400 uppercase tracking-wide">
+                  🚨 GEOFENCE ALERT: MACHINE MOVED &gt; 1 KM
+                </span>
+                <span className="px-2 py-0.5 rounded-full bg-rose-600 text-white font-black text-[10px]">
+                  {moveDistanceKm.toFixed(2)} km FROM POND
+                </span>
+              </div>
+              <p className="text-[11px] text-slate-700 dark:text-slate-300 mt-0.5 truncate">
+                Machine {deviceId} ({name}) is {moveDistanceKm.toFixed(2)} km away from calibrated anchor! Possible theft or unauthorized relocation.
+              </p>
+            </div>
+          </div>
+
+          <div className="flex items-center flex-wrap gap-1.5 shrink-0">
+            <button
+              onClick={handleCenterLive}
+              className="px-2.5 py-1.5 bg-rose-600 hover:bg-rose-500 active:scale-95 text-white font-bold text-xs rounded-xl flex items-center gap-1 cursor-pointer transition-all shadow-xs"
+              title="Track live moving machine"
+            >
+              <Navigation className="w-3.5 h-3.5" />
+              <span>Track Movement</span>
+            </button>
+            <button
+              onClick={handleCenterAnchor}
+              className="px-2.5 py-1.5 bg-slate-800 hover:bg-slate-700 text-white font-bold text-xs rounded-xl flex items-center gap-1 cursor-pointer"
+              title="View original locked anchor"
+            >
+              <Lock className="w-3.5 h-3.5 text-emerald-400" />
+              <span>Pond Anchor</span>
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* 2c. DUAL-MODE CALIBRATION & MOVING STATUS BANNER */}
+      {isMoving && !(moveDistanceKm > 1.0 || device.isGeofenceBreached) ? (
         <div className="p-3.5 bg-amber-500/10 dark:bg-amber-950/30 border border-amber-500/30 rounded-2xl flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-xs">
           <div className="flex items-center gap-2.5 min-w-0">
             <div className="p-2 rounded-xl bg-amber-500/20 text-amber-600 dark:text-amber-400 shrink-0">
@@ -690,7 +832,7 @@ export const LiveGprsMap: React.FC<LiveGprsMapProps> = ({
             <div className="min-w-0">
               <div className="flex items-center flex-wrap gap-2">
                 <span className="font-black text-amber-700 dark:text-amber-300 uppercase tracking-wide">
-                  🚗 SIM900A IN MOTION / RELOCATED
+                  🚗 A7672S IN MOTION / RELOCATED
                 </span>
                 {moveDistanceKm > 0 && (
                   <span className="px-2 py-0.5 rounded-full bg-amber-500/20 text-amber-800 dark:text-amber-200 font-extrabold text-[10px]">
@@ -699,20 +841,29 @@ export const LiveGprsMap: React.FC<LiveGprsMapProps> = ({
                 )}
               </div>
               <p className="text-[11px] text-slate-600 dark:text-slate-400 mt-0.5 truncate">
-                Serving Tower: LAC <span className="font-mono font-bold text-slate-800 dark:text-slate-200">{cellLac || 'Live'}</span>, CID <span className="font-mono font-bold text-slate-800 dark:text-slate-200">{cellId || 'Active'}</span> • Map tracks live moving vehicle/modem
+                Serving Tower: TAC <span className="font-mono font-bold text-slate-800 dark:text-slate-200">{cellLac || 'Live'}</span>, CID <span className="font-mono font-bold text-slate-800 dark:text-slate-200">{cellId || 'Active'}</span> • Real-time GNSS tracking
               </p>
             </div>
           </div>
 
           <div className="flex items-center flex-wrap gap-1.5 shrink-0">
             <button
+              onClick={handleCalibrateDeviceGps}
+              disabled={isCalibrating}
+              className="px-2.5 py-1.5 bg-sky-600 hover:bg-sky-500 active:scale-95 text-white font-bold text-xs rounded-xl flex items-center gap-1 cursor-pointer transition-all shadow-xs"
+              title="Lock coordinates using live A7672S GNSS fix"
+            >
+              <LocateFixed className="w-3.5 h-3.5" />
+              <span>A7672S GPS</span>
+            </button>
+            <button
               onClick={handleCalibratePhoneGps}
               disabled={isCalibrating}
               className="px-2.5 py-1.5 bg-emerald-600 hover:bg-emerald-500 active:scale-95 text-white font-bold text-xs rounded-xl flex items-center gap-1 cursor-pointer transition-all shadow-xs"
-              title="Lock coordinates to this new pond location"
+              title="Lock coordinates to this new pond location with Phone GPS"
             >
               <LocateFixed className={`w-3.5 h-3.5 ${isCalibrating ? 'animate-spin' : ''}`} />
-              <span>{isCalibrating ? 'Locating...' : 'Re-Calibrate Pond Here'}</span>
+              <span>Phone GPS</span>
             </button>
             {hasCalibratedCoords && (
               <button
@@ -727,7 +878,7 @@ export const LiveGprsMap: React.FC<LiveGprsMapProps> = ({
           </div>
         </div>
       ) : isCalibrated ? (
-        <div className="p-3 bg-emerald-500/10 dark:bg-emerald-950/30 border border-emerald-500/30 rounded-2xl flex items-center justify-between gap-2.5 text-xs">
+        <div className="p-3 bg-emerald-500/10 dark:bg-emerald-950/30 border border-emerald-500/30 rounded-2xl flex flex-col sm:flex-row sm:items-center justify-between gap-2.5 text-xs">
           <div className="flex items-center gap-2.5 min-w-0">
             <div className="p-1.5 rounded-xl bg-emerald-500/20 text-emerald-600 dark:text-emerald-400 shrink-0">
               <Lock className="w-4 h-4" />
@@ -735,55 +886,115 @@ export const LiveGprsMap: React.FC<LiveGprsMapProps> = ({
             <div className="min-w-0">
               <div className="flex items-center gap-2">
                 <span className="font-black text-emerald-800 dark:text-emerald-300 text-xs">
-                  🔒 Calibrated Pond Anchor Locked (Stationary)
+                  🔒 Calibrated Pond Anchor Locked (1.0 km Safe Geofence Active)
                 </span>
                 <span className="px-1.5 py-0.2 rounded text-[9px] font-bold bg-emerald-500/20 text-emerald-700 dark:text-emerald-300">
-                  Fixed GPS
+                  Fixed GPS Anchor
                 </span>
               </div>
               <p className="text-[10px] text-slate-500 dark:text-slate-400 truncate">
-                Locked with high-precision Phone GPS. Tower: LAC {cellLac || 'Active'}, CID {cellId || 'Active'}. When SIM900A travels, live movement will track automatically.
+                Locked at {calibratedLatitude?.toFixed(5)}, {calibratedLongitude?.toFixed(5)}. Geofence alerts trigger if moved &gt; 1.0 km.
               </p>
             </div>
           </div>
 
           <div className="flex items-center gap-1.5 shrink-0">
             <button
+              onClick={() => setShowManualModal(true)}
+              className="px-2 py-1 bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-300 font-bold text-[11px] rounded-xl flex items-center gap-1 cursor-pointer"
+            >
+              <Compass className="w-3 h-3 text-sky-500" />
+              <span>Edit Coords</span>
+            </button>
+            <button
               onClick={handleResetCalibrationClick}
               disabled={isResetting}
               className="px-2 py-1 bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 dark:hover:bg-slate-700 text-slate-600 dark:text-slate-400 font-bold text-[11px] rounded-xl flex items-center gap-1 transition-all cursor-pointer"
-              title="Unstick pond calibration to track pure raw SIM900A live cellular coordinates"
+              title="Unlock pond calibration to re-calibrate"
             >
               <Unlock className="w-3 h-3" />
-              <span>Unstick</span>
+              <span>Unlock</span>
             </button>
           </div>
         </div>
       ) : (
-        <div className="p-3 bg-sky-500/10 dark:bg-sky-950/30 border border-sky-500/20 rounded-2xl flex items-center justify-between gap-2 text-xs">
+        <div className="p-3 bg-sky-500/10 dark:bg-sky-950/30 border border-sky-500/20 rounded-2xl flex flex-col sm:flex-row sm:items-center justify-between gap-2 text-xs">
           <div className="flex items-center gap-2 min-w-0">
             <div className="p-1.5 rounded-xl bg-sky-500/20 text-sky-600 dark:text-sky-400 shrink-0">
               <Radio className="w-3.5 h-3.5" />
             </div>
             <div className="min-w-0">
               <span className="font-bold text-sky-800 dark:text-sky-300 text-xs block">
-                Cellular Station Fix (Uncalibrated)
+                Pond Location Unlocked (No Geofence Anchor)
               </span>
               <p className="text-[10px] text-slate-500 dark:text-slate-400 truncate">
-                Tap 'Calibrate GPS' while standing at the pond to permanently lock exact meter-accuracy coordinates.
+                Calibrate and lock live coordinates to activate the 1.0 km anti-theft geofence.
               </p>
             </div>
           </div>
 
-          <button
-            onClick={handleCalibratePhoneGps}
-            disabled={isCalibrating}
-            className="px-2.5 py-1 bg-emerald-600 hover:bg-emerald-500 active:scale-95 text-white font-bold text-xs rounded-xl flex items-center gap-1 transition-all cursor-pointer shadow-xs shrink-0"
-            title="Calibrate exact pond coordinates using Phone GPS"
-          >
-            <LocateFixed className={`w-3.5 h-3.5 ${isCalibrating ? 'animate-spin' : ''}`} />
-            <span>{isCalibrating ? 'Locating...' : 'Calibrate GPS'}</span>
-          </button>
+          <div className="flex items-center flex-wrap gap-1.5 shrink-0">
+            <button
+              onClick={handleCalibrateDeviceGps}
+              disabled={isCalibrating}
+              className="px-2.5 py-1 bg-sky-600 hover:bg-sky-500 active:scale-95 text-white font-bold text-xs rounded-xl flex items-center gap-1 transition-all cursor-pointer shadow-xs shrink-0"
+              title="Lock exact coordinates from A7672S GPS"
+            >
+              <LocateFixed className="w-3.5 h-3.5" />
+              <span>A7672S GPS</span>
+            </button>
+            <button
+              onClick={handleCalibratePhoneGps}
+              disabled={isCalibrating}
+              className="px-2.5 py-1 bg-emerald-600 hover:bg-emerald-500 active:scale-95 text-white font-bold text-xs rounded-xl flex items-center gap-1 transition-all cursor-pointer shadow-xs shrink-0"
+              title="Calibrate exact pond coordinates using Phone GPS"
+            >
+              <LocateFixed className={`w-3.5 h-3.5 ${isCalibrating ? 'animate-spin' : ''}`} />
+              <span>{isCalibrating ? 'Locating...' : 'Phone GPS'}</span>
+            </button>
+            <button
+              onClick={() => setShowManualModal(true)}
+              className="px-2.5 py-1 bg-slate-200 hover:bg-slate-300 dark:bg-slate-800 dark:hover:bg-slate-700 text-slate-800 dark:text-slate-200 font-bold text-xs rounded-xl flex items-center gap-1 cursor-pointer"
+            >
+              <span>Search/Input</span>
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* Manual Coordinate Entry Modal */}
+      {showManualModal && (
+        <div className="p-3.5 bg-slate-100 dark:bg-slate-800 rounded-2xl border border-slate-300 dark:border-slate-700 space-y-2 text-xs">
+          <div className="flex justify-between items-center font-bold text-slate-800 dark:text-slate-100">
+            <span>Enter / Search Pond Coordinates</span>
+            <button onClick={() => setShowManualModal(false)} className="text-slate-400 hover:text-slate-600 cursor-pointer">✕</button>
+          </div>
+          <div className="grid grid-cols-2 gap-2">
+            <div>
+              <label className="text-[10px] text-slate-500 uppercase font-bold">Latitude (Decimal)</label>
+              <input
+                type="text"
+                placeholder="e.g. 16.5787"
+                value={inputLat}
+                onChange={(e) => setInputLat(e.target.value)}
+                className="w-full px-2.5 py-1.5 rounded-xl border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-900 text-xs font-mono font-bold"
+              />
+            </div>
+            <div>
+              <label className="text-[10px] text-slate-500 uppercase font-bold">Longitude (Decimal)</label>
+              <input
+                type="text"
+                placeholder="e.g. 82.0061"
+                value={inputLng}
+                onChange={(e) => setInputLng(e.target.value)}
+                className="w-full px-2.5 py-1.5 rounded-xl border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-900 text-xs font-mono font-bold"
+              />
+            </div>
+          </div>
+          <div className="flex justify-end gap-2 pt-1">
+            <button onClick={() => setShowManualModal(false)} className="px-3 py-1 text-slate-600 dark:text-slate-400 font-bold">Cancel</button>
+            <button onClick={handleSaveManual} className="px-3 py-1 bg-emerald-600 hover:bg-emerald-500 text-white font-bold rounded-xl shadow-xs">Lock Pond Anchor</button>
+          </div>
         </div>
       )}
 
@@ -793,7 +1004,7 @@ export const LiveGprsMap: React.FC<LiveGprsMapProps> = ({
           <div className="flex items-center gap-1.5 min-w-0">
             <MapPin className="w-4 h-4 text-sky-500 shrink-0" />
             <h4 className="text-xs font-extrabold uppercase tracking-wider text-slate-800 dark:text-slate-100 truncate">
-              {isMoving ? 'Live Moving SIM900A Tracker' : 'Live SIM900A Position'}
+              {isMoving ? 'Live Moving 4G Tracker' : 'Live A7672S 4G Position'}
             </h4>
           </div>
 
@@ -813,10 +1024,10 @@ export const LiveGprsMap: React.FC<LiveGprsMapProps> = ({
             <button
               onClick={handleCenterLive}
               className="min-h-[32px] px-2.5 py-1 bg-sky-600 hover:bg-sky-500 active:scale-95 text-white font-bold text-xs rounded-xl flex items-center gap-1 transition-all cursor-pointer shadow-xs"
-              title="Center Map on Live SIM900A"
+              title="Center Map on Live A7672S"
             >
               <MapPin className="w-3.5 h-3.5 shrink-0" />
-              <span>{isMoving ? 'Follow SIM900A' : 'Center'}</span>
+              <span>{isMoving ? 'Follow 4G Tracker' : 'Center'}</span>
             </button>
 
             {/* Calibrate with Phone GPS */}
@@ -855,7 +1066,7 @@ export const LiveGprsMap: React.FC<LiveGprsMapProps> = ({
           {/* Floating live fix pill overlay */}
           <div className="absolute bottom-2.5 left-2.5 z-20 flex items-center gap-1.5 px-2.5 py-1 bg-slate-900/90 text-white backdrop-blur-md rounded-xl border border-slate-700 text-[10px] font-bold shadow-md">
             <span className="w-2 h-2 rounded-full bg-sky-400 animate-ping" />
-            <span>SIM900A GPRS Live: {displayLat.toFixed(4)}, {displayLng.toFixed(4)}</span>
+            <span>A7672S 4G Live: {displayLat.toFixed(4)}, {displayLng.toFixed(4)}</span>
           </div>
         </div>
 
@@ -886,15 +1097,15 @@ export const LiveGprsMap: React.FC<LiveGprsMapProps> = ({
         </div>
       </div>
 
-      {/* 4. REAL SIM900A GPRS LOCATION PINGS LOG (NO FAKE SIMULATION) */}
+      {/* 4. REAL SIMCom A7672S 4G LOCATION PINGS LOG (NO FAKE SIMULATION) */}
       <div className="bg-white dark:bg-slate-900 rounded-2xl border border-slate-200 dark:border-slate-800 p-3.5 sm:p-4 shadow-xs space-y-3 w-full max-w-full overflow-hidden">
         <div className="flex items-center justify-between pb-2.5 border-b border-slate-100 dark:border-slate-800">
           <div>
             <h4 className="text-xs sm:text-sm font-black text-slate-800 dark:text-slate-100 tracking-tight">
-              Real SIM900A Location Fixes ({realPings.length})
+              Real A7672S 4G Location Fixes ({realPings.length})
             </h4>
             <p className="text-[11px] text-slate-500 dark:text-slate-400">
-              Authentic GPRS cellular pings received from ESP32 hardware
+              Authentic 4G LTE cellular fixes received from ESP32 hardware
             </p>
           </div>
 
